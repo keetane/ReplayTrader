@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { Bar } from "../types";
 import {
+  DEFAULT_MARGIN_REQUIREMENT_RATE,
   evaluateMaintenanceRatio,
+  evaluateMarginBuyingPower,
   evaluateMarginExposure,
   INITIAL_TRADING_STATE,
   submitVirtualOrder,
@@ -153,5 +155,11 @@ describe("submitVirtualOrder", () => {
 
     expect(exposure).toBe(11_000);
     expect(evaluateMaintenanceRatio(5_000_000, exposure)).toBeCloseTo(45454.5454);
+  });
+
+  it("calculates margin buying power from cash and current exposure", () => {
+    expect(DEFAULT_MARGIN_REQUIREMENT_RATE).toBe(0.3);
+    expect(evaluateMarginBuyingPower(5_000_000, 2_000_000)).toBeCloseTo(14_666_666.6667);
+    expect(evaluateMarginBuyingPower(300_000, 1_500_000)).toBe(0);
   });
 });
