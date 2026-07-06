@@ -1,0 +1,18 @@
+node_modules/
+dist/
+.DS_Store
+*.log
+test-results/
+playwright-report/
+
+# Prevent accidentally publishing real market data.
+*.csv
+*.tsv
+*.xlsx
+*.xls
+
+# Local environment / editor files.
+.env
+.env.*
+.vscode/
+.idea/
