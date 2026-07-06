@@ -22,6 +22,7 @@ import { formatPercent, formatPrice, formatSignedYen, formatVolume, formatYen } 
 import { clearSession, loadSession, saveSession } from "./lib/storage";
 import {
   evaluateMaintenanceRatio,
+  evaluateMarginBuyingPower,
   evaluateMarginExposure,
   evaluateUnrealizedPnl,
   INITIAL_TRADING_STATE,
@@ -75,6 +76,7 @@ function App() {
   const marginExposure = currentBar ? evaluateMarginExposure(trading.positions, currentBar.close) : 0;
   const accountValue = trading.cash + unrealizedPnl;
   const maintenanceRatio = evaluateMaintenanceRatio(accountValue, marginExposure);
+  const marginBuyingPower = evaluateMarginBuyingPower(trading.cash, marginExposure);
 
   const selectedSummary = useMemo(() => (selectedSymbol ? summarizeSymbol(selectedSymbol) : "-"), [selectedSymbol]);
 
@@ -515,13 +517,16 @@ function App() {
             <Metric label="評価損益" value={formatSignedYen(unrealizedPnl)} strong={unrealizedPnl !== 0} />
             <Metric label="確定損益" value={formatSignedYen(trading.realizedPnl)} strong={trading.realizedPnl !== 0} />
             <Metric label="建玉評価額" value={formatYen(marginExposure)} />
+            <Metric label="信用建余力" value={formatYen(marginBuyingPower)} />
             <Metric
               label="信用維持率"
               value={maintenanceRatio == null ? "-" : formatPercent(maintenanceRatio)}
               strong={maintenanceRatio != null && maintenanceRatio < 30}
             />
             <Metric label="評価額" value={formatYen(accountValue)} />
-            <p className="notice compact-notice">手数料・金利は計算対象外です。日跨ぎ建玉がある場合、新規注文は拒否されます。</p>
+            <p className="notice compact-notice">
+              信用建余力は現金残高を保証金、委託保証金率30%として簡易計算します。手数料・金利は計算対象外です。
+            </p>
           </section>
 
           <section className="panel-section table-section">

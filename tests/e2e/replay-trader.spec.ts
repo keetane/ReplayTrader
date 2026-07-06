@@ -59,6 +59,8 @@ test.describe("Replay Trader major flows", () => {
     await expect(page.getByRole("button", { name: "保存" })).toBeEnabled();
     await expect(summaryCard(page).getByText("仮想資金")).toBeVisible();
     await expect(summaryCard(page).getByText("5,000,000 円")).toHaveCount(3);
+    await expect(summaryCard(page).getByText("信用建余力", { exact: true })).toBeVisible();
+    await expect(summaryCard(page).getByText("16,666,667 円")).toBeVisible();
     await expect(summaryCard(page).getByText("信用維持率")).toBeVisible();
   });
 
@@ -71,6 +73,7 @@ test.describe("Replay Trader major flows", () => {
 
     await expect(initialCashInput).toHaveValue("7000000");
     await expect(summaryCard(page).getByText("7,000,000 円")).toHaveCount(3);
+    await expect(summaryCard(page).getByText("23,333,333 円")).toBeVisible();
   });
 
   test("日付未指定ではサンプルデータの最近傍日を表示する", async ({ page }) => {

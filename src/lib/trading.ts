@@ -1,6 +1,7 @@
 import type { Bar, Execution, Position, Side, TradeType, TradingState, VirtualOrder } from "../types";
 
 export const DEFAULT_INITIAL_CASH = 5_000_000;
+export const DEFAULT_MARGIN_REQUIREMENT_RATE = 0.3;
 
 export const INITIAL_TRADING_STATE: TradingState = {
   initialCash: DEFAULT_INITIAL_CASH,
@@ -133,6 +134,17 @@ export function evaluateMarginExposure(positions: Position[], latestPrice: numbe
 export function evaluateMaintenanceRatio(accountValue: number, marginExposure: number): number | null {
   if (marginExposure <= 0) return null;
   return (accountValue / marginExposure) * 100;
+}
+
+export function evaluateMarginBuyingPower(
+  cashAvailable: number,
+  marginExposure: number,
+  requirementRate = DEFAULT_MARGIN_REQUIREMENT_RATE,
+): number {
+  if (!Number.isFinite(cashAvailable) || !Number.isFinite(marginExposure) || requirementRate <= 0) {
+    return 0;
+  }
+  return Math.max(0, cashAvailable / requirementRate - marginExposure);
 }
 
 function resolveFillPrice(input: SubmitOrderInput): number | null {
