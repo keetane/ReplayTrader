@@ -40,6 +40,14 @@ export function filterBarsByDate(bars: Bar[], date?: string): Bar[] {
   return bars.filter((bar) => bar.datetime.startsWith(date));
 }
 
+export function filterBarsFromDateLookback(bars: Bar[], date: string | undefined, lookbackDays: number): Bar[] {
+  if (!date) return [];
+  const targetStart = Date.parse(`${date}T00:00:00+09:00`);
+  if (!Number.isFinite(targetStart)) return [];
+  const startTime = Math.floor((targetStart - Math.max(0, lookbackDays) * 24 * 60 * 60 * 1000) / 1000);
+  return bars.filter((bar) => bar.time >= startTime);
+}
+
 export function prepareBarsForTimeframe(bars: Bar[], timeframe: Timeframe): Bar[] {
   if (timeframe === "1m") return bars;
   return aggregateBars(bars, 5);

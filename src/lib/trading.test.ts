@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { Bar } from "../types";
 import {
+  evaluateCashMarketValue,
   DEFAULT_MARGIN_REQUIREMENT_RATE,
   evaluateMaintenanceRatio,
   evaluateMarginBuyingPower,
   evaluateMarginExposure,
+  evaluatePositionPnlSummary,
+  evaluatePositionUnrealizedPnl,
   INITIAL_TRADING_STATE,
   submitVirtualOrder,
   updateInitialCash,
@@ -44,9 +47,10 @@ describe("submitVirtualOrder", () => {
     expect(next.executions[0].price).toBe(105);
     expect(next.positions[0]).toMatchObject({
       symbol: "7203",
+      product: "margin",
       side: "long",
       quantity: 100,
-      averagePrice: 105,
+      entryPrice: 105,
       openedDate: "2026-02-19",
     });
   });
@@ -116,7 +120,140 @@ describe("submitVirtualOrder", () => {
     expect(rejected.positions[0].quantity).toBe(100);
   });
 
-  it("rejects new orders when carried positions exist", () => {
+  it("keeps margin entries as separate lots and allows partial closes", () => {
+    const first = submitVirtualOrder(INITIAL_TRADING_STATE, {
+      symbol: "7203",
+      side: "buy",
+      tradeType: "marginOpen",
+      orderType: "market",
+      quantity: 100,
+      bar,
+      replayIndex: 0,
+    });
+    const second = submitVirtualOrder(first, {
+      symbol: "7203",
+      side: "buy",
+      tradeType: "marginOpen",
+      orderType: "limit",
+      quantity: 200,
+      limitPrice: 108,
+      bar,
+      replayIndex: 1,
+    });
+
+    expect(second.positions).toHaveLength(2);
+    expect(second.positions.map((position) => position.entryPrice)).toEqual([105, 108]);
+    expect(second.positions.map((position) => position.quantity)).toEqual([100, 200]);
+
+    const closed = submitVirtualOrder(second, {
+      symbol: "7203",
+      side: "sell",
+      tradeType: "marginClose",
+      orderType: "limit",
+      quantity: 150,
+      limitPrice: 110,
+      bar,
+      replayIndex: 2,
+    });
+
+    expect(closed.positions).toHaveLength(1);
+    expect(closed.positions[0]).toMatchObject({
+      product: "margin",
+      side: "long",
+      quantity: 150,
+      entryPrice: 108,
+    });
+    expect(closed.realizedPnl).toBe(600);
+  });
+
+  it("allows partial closes for margin short positions", () => {
+    const opened = submitVirtualOrder(INITIAL_TRADING_STATE, {
+      symbol: "7203",
+      side: "sell",
+      tradeType: "marginOpen",
+      orderType: "market",
+      quantity: 200,
+      bar,
+      replayIndex: 0,
+    });
+    const closed = submitVirtualOrder(opened, {
+      symbol: "7203",
+      side: "buy",
+      tradeType: "marginClose",
+      orderType: "limit",
+      quantity: 100,
+      limitPrice: 100,
+      bar,
+      replayIndex: 1,
+    });
+
+    expect(closed.positions[0]).toMatchObject({
+      product: "margin",
+      side: "short",
+      quantity: 100,
+      entryPrice: 105,
+    });
+    expect(closed.realizedPnl).toBe(500);
+  });
+
+  it("keeps cash holdings and margin positions separate for the same symbol", () => {
+    const cashOpened = submitVirtualOrder(INITIAL_TRADING_STATE, {
+      symbol: "7203",
+      side: "buy",
+      tradeType: "cash",
+      orderType: "market",
+      quantity: 100,
+      bar,
+      replayIndex: 0,
+    });
+    const marginOpened = submitVirtualOrder(cashOpened, {
+      symbol: "7203",
+      side: "buy",
+      tradeType: "marginOpen",
+      orderType: "limit",
+      quantity: 100,
+      limitPrice: 108,
+      bar,
+      replayIndex: 1,
+    });
+
+    expect(marginOpened.cash).toBe(4_989_500);
+    expect(marginOpened.positions).toHaveLength(2);
+    expect(marginOpened.positions.map((position) => position.product)).toEqual(["cash", "margin"]);
+    expect(marginOpened.positions.map((position) => position.entryPrice)).toEqual([105, 108]);
+  });
+
+  it("allows partial cash sells and returns proceeds to cash", () => {
+    const opened = submitVirtualOrder(INITIAL_TRADING_STATE, {
+      symbol: "7203",
+      side: "buy",
+      tradeType: "cash",
+      orderType: "market",
+      quantity: 200,
+      bar,
+      replayIndex: 0,
+    });
+    const sold = submitVirtualOrder(opened, {
+      symbol: "7203",
+      side: "sell",
+      tradeType: "cash",
+      orderType: "limit",
+      quantity: 100,
+      limitPrice: 108,
+      bar,
+      replayIndex: 1,
+    });
+
+    expect(sold.cash).toBe(4_989_800);
+    expect(sold.realizedPnl).toBe(300);
+    expect(sold.positions[0]).toMatchObject({
+      product: "cash",
+      quantity: 100,
+      entryPrice: 105,
+    });
+  });
+
+  it("rejects new margin orders when carried margin positions exist", () => {
     const opened = submitVirtualOrder(INITIAL_TRADING_STATE, {
       symbol: "7203",
       side: "buy",
@@ -155,6 +292,50 @@ describe("submitVirtualOrder", () => {
 
     expect(exposure).toBe(11_000);
     expect(evaluateMaintenanceRatio(5_000_000, exposure)).toBeCloseTo(45454.5454);
+  });
+
+  it("excludes cash holdings from margin exposure", () => {
+    const opened = submitVirtualOrder(INITIAL_TRADING_STATE, {
+      symbol: "7203",
+      side: "buy",
+      tradeType: "cash",
+      orderType: "market",
+      quantity: 100,
+      bar,
+      replayIndex: 0,
+    });
+
+    expect(evaluateCashMarketValue(opened.positions, 110)).toBe(11_000);
+    expect(evaluateMarginExposure(opened.positions, 110)).toBe(0);
+  });
+
+  it("calculates position PnL per lot and separates buy and sell totals", () => {
+    const bought = submitVirtualOrder(INITIAL_TRADING_STATE, {
+      symbol: "7203",
+      side: "buy",
+      tradeType: "marginOpen",
+      orderType: "market",
+      quantity: 100,
+      bar,
+      replayIndex: 0,
+    });
+    const sold = submitVirtualOrder(bought, {
+      symbol: "7203",
+      side: "sell",
+      tradeType: "marginOpen",
+      orderType: "market",
+      quantity: 200,
+      bar,
+      replayIndex: 1,
+    });
+
+    expect(evaluatePositionUnrealizedPnl(sold.positions[0], 110)).toBe(500);
+    expect(evaluatePositionUnrealizedPnl(sold.positions[1], 110)).toBe(-1_000);
+    expect(evaluatePositionPnlSummary(sold.positions, 110)).toEqual({
+      buy: 500,
+      sell: -1_000,
+      total: -500,
+    });
   });
 
   it("calculates margin buying power from cash and current exposure", () => {

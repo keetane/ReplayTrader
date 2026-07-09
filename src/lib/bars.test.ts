@@ -5,6 +5,7 @@ import {
   calculateMovingAverage,
   calculateVisibleMovingAverage,
   filterBarsByDate,
+  filterBarsFromDateLookback,
   resolveRequestedDate,
 } from "./bars";
 
@@ -29,6 +30,21 @@ describe("bar helpers", () => {
     expect(aggregated).toHaveLength(2);
     expect(aggregated[0]).toMatchObject({ open: 100, high: 106, low: 99, close: 105, volume: 60 });
     expect(aggregated[1]).toMatchObject({ open: 105, high: 107, low: 104, close: 106, volume: 40 });
+  });
+
+  it("filters chart bars from two days before the active date", () => {
+    const sourceBars = [
+      bar("2024-05-14 23:59:00+0900", 80, 80, 80, 80, 10),
+      bar("2024-05-15 00:00:00+0900", 90, 90, 90, 90, 10),
+      bar("2024-05-16 09:00:00+0900", 100, 100, 100, 100, 10),
+      bar("2024-05-17 09:00:00+0900", 110, 110, 110, 110, 10),
+    ];
+
+    expect(filterBarsFromDateLookback(sourceBars, "2024-05-17", 2).map((item) => item.datetime)).toEqual([
+      "2024-05-15 00:00:00+0900",
+      "2024-05-16 09:00:00+0900",
+      "2024-05-17 09:00:00+0900",
+    ]);
   });
 
   it("calculates moving averages from displayed bars", () => {
