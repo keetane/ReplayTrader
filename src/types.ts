@@ -5,6 +5,7 @@ export type TradeType = "cash" | "marginOpen" | "marginClose";
 export type OrderType = "market" | "limit";
 export type Timeframe = "1m" | "5m";
 export type ThemeMode = "light" | "dark";
+export type PositionProduct = "cash" | "margin";
 
 export interface Bar {
   time: UTCTimestamp;
@@ -56,11 +57,14 @@ export interface Execution {
 }
 
 export interface Position {
+  id: string;
+  product: PositionProduct;
   symbol: string;
   side: "long" | "short";
   quantity: number;
-  averagePrice: number;
+  entryPrice: number;
   openedDate: string;
+  openedAt: string;
 }
 
 export interface TradingState {

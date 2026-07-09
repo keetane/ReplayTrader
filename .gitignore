@@ -6,6 +6,7 @@ test-results/
 playwright-report/
 
 # Prevent accidentally publishing real market data.
+private-market-data/
 *.csv
 *.tsv
 *.xlsx

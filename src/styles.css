@@ -183,6 +183,12 @@ input:disabled {
   background: #f8fbff;
 }
 
+.file-drop.dragging {
+  border-color: #2563eb;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
 .file-drop strong {
   font-size: 14px;
 }
@@ -337,6 +343,17 @@ input:disabled {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 12px;
+}
+
+.daily-strip {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.daily-strip span {
+  font-weight: 700;
 }
 
 .timeframe-picker {
@@ -614,11 +631,12 @@ input:not([type="range"]) {
 }
 
 .table-section {
-  overflow: hidden;
+  overflow-x: auto;
 }
 
 table {
   width: 100%;
+  min-width: 520px;
   border-collapse: collapse;
   font-size: 12px;
 }
@@ -643,6 +661,11 @@ th {
 td[colspan] {
   color: #64748b;
   text-align: center;
+}
+
+td.signed {
+  color: #059669;
+  font-weight: 700;
 }
 
 .app-footer {
@@ -719,6 +742,10 @@ td[colspan] {
     justify-content: flex-start;
   }
 
+  .daily-strip {
+    justify-content: flex-start;
+  }
+
   .chart-tools {
     justify-items: start;
   }
@@ -768,6 +795,12 @@ td[colspan] {
   border-color: #475569;
   background: #f8fafc;
   color: #0f172a;
+}
+
+.app-shell[data-theme="dark"] .file-drop.dragging {
+  border-color: #60a5fa;
+  background: #172554;
+  color: #dbeafe;
 }
 
 .app-shell[data-theme="dark"] .brand p,

@@ -3,14 +3,18 @@ import {
   CandlestickSeries,
   ColorType,
   createChart,
+  createSeriesMarkers,
   HistogramSeries,
   LineSeries,
   type IChartApi,
   type ISeriesApi,
+  type ISeriesMarkersPluginApi,
+  type Time,
   type UTCTimestamp,
   type WhitespaceData,
 } from "lightweight-charts";
 import { calculateVisibleMovingAverage } from "../lib/bars";
+import { buildExecutionMarkers } from "../lib/chartMarkers";
 import type { Bar, Execution, ThemeMode, Timeframe } from "../types";
 
 interface ChartPanelProps {
@@ -20,16 +24,19 @@ interface ChartPanelProps {
   maPeriods: [number, number, number];
   themeMode: ThemeMode;
   timeframe: Timeframe;
+  viewportKey: string;
 }
 
 const MA_COLORS = ["#f59e0b", "#2563eb", "#7c3aed"] as const;
 
-export function ChartPanel({ bars, maSourceBars, executions, maPeriods, themeMode, timeframe }: ChartPanelProps) {
+export function ChartPanel({ bars, maSourceBars, executions, maPeriods, themeMode, timeframe, viewportKey }: ChartPanelProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const maRefs = useRef<ISeriesApi<"Line">[]>([]);
+  const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
+  const appliedViewportKeyRef = useRef<string>("");
 
   const executionTimes = useMemo(() => new Set(executions.map((execution) => execution.time)), [executions]);
   const isDark = themeMode === "dark";
@@ -46,6 +53,10 @@ export function ChartPanel({ bars, maSourceBars, executions, maPeriods, themeMod
         fontFamily:
           '"Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
       },
+      localization: {
+        locale: "ja-JP",
+        timeFormatter: formatCrosshairTime,
+      },
       grid: {
         vertLines: { color: isDark ? "#1e293b" : "#e2e8f0" },
         horzLines: { color: isDark ? "#1e293b" : "#e2e8f0" },
@@ -58,6 +69,7 @@ export function ChartPanel({ bars, maSourceBars, executions, maPeriods, themeMod
         borderColor: isDark ? "#334155" : "#cbd5e1",
         timeVisible: true,
         secondsVisible: false,
+        tickMarkFormatter: formatAxisTime,
       },
       crosshair: {
         mode: 1,
@@ -71,6 +83,10 @@ export function ChartPanel({ bars, maSourceBars, executions, maPeriods, themeMod
       borderDownColor: "#dc2626",
       wickUpColor: "#15803d",
       wickDownColor: "#b91c1c",
+    });
+    const executionMarkers = createSeriesMarkers(candleSeries, [], {
+      autoScale: true,
+      zOrder: "top",
     });
     const volumeSeries = chart.addSeries(HistogramSeries, {
       priceFormat: { type: "volume" },
@@ -97,18 +113,27 @@ export function ChartPanel({ bars, maSourceBars, executions, maPeriods, themeMod
     chartRef.current = chart;
     candleRef.current = candleSeries;
     volumeRef.current = volumeSeries;
+    markersRef.current = executionMarkers;
     maRefs.current = maSeries;
+    appliedViewportKeyRef.current = "";
 
     return () => {
       chart.remove();
       chartRef.current = null;
       candleRef.current = null;
       volumeRef.current = null;
+      markersRef.current = null;
       maRefs.current = [];
     };
   }, [isDark, maPeriods]);
 
   useEffect(() => {
+    const chart = chartRef.current;
+    const timeScale = chart?.timeScale();
+    const priceScale = candleRef.current?.priceScale();
+    const shouldResetViewport = viewportKey !== appliedViewportKeyRef.current;
+    const preservedTimeRange = shouldResetViewport ? null : timeScale?.getVisibleLogicalRange();
+    const preservedPriceRange = shouldResetViewport ? null : priceScale?.getVisibleRange();
     const trailingWhitespace = buildTrailingWhitespace(bars, timeframe);
     candleRef.current?.setData(
       [
@@ -135,16 +160,31 @@ export function ChartPanel({ bars, maSourceBars, executions, maPeriods, themeMod
     maRefs.current.forEach((series, index) => {
       series.setData(calculateVisibleMovingAverage(maSourceBars, bars, maPeriods[index]));
     });
-    const timeScale = chartRef.current?.timeScale();
     if (bars.length > 0) {
-      timeScale?.setVisibleLogicalRange({
-        from: Math.max(-8, bars.length - 90),
-        to: Math.max(72, bars.length + 8),
-      });
+      if (shouldResetViewport) {
+        timeScale?.setVisibleLogicalRange({
+          from: Math.max(-8, bars.length - 90),
+          to: Math.max(72, bars.length + 8),
+        });
+        priceScale?.setAutoScale(true);
+        appliedViewportKeyRef.current = viewportKey;
+      } else {
+        if (preservedTimeRange) {
+          timeScale?.setVisibleLogicalRange(preservedTimeRange);
+        }
+        if (preservedPriceRange) {
+          priceScale?.setVisibleRange(preservedPriceRange);
+        }
+      }
     } else {
       timeScale?.fitContent();
+      appliedViewportKeyRef.current = viewportKey;
     }
-  }, [bars, maSourceBars, maPeriods, timeframe]);
+  }, [bars, maSourceBars, maPeriods, timeframe, viewportKey]);
+
+  useEffect(() => {
+    markersRef.current?.setMarkers(buildExecutionMarkers(executions, timeframe));
+  }, [executions, timeframe]);
 
   return (
     <div className="chart-shell">
@@ -169,6 +209,28 @@ export function ChartPanel({ bars, maSourceBars, executions, maPeriods, themeMod
       ) : null}
     </div>
   );
+}
+
+function formatAxisTime(time: unknown): string {
+  if (typeof time !== "number") return String(time);
+  return new Intl.DateTimeFormat("ja-JP", {
+    timeZone: "Asia/Tokyo",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(new Date(time * 1000));
+}
+
+function formatCrosshairTime(time: unknown): string {
+  if (typeof time !== "number") return String(time);
+  return new Intl.DateTimeFormat("ja-JP", {
+    timeZone: "Asia/Tokyo",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(new Date(time * 1000));
 }
 
 function buildTrailingWhitespace(bars: Bar[], timeframe: Timeframe): WhitespaceData[] {
