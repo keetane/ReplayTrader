@@ -387,6 +387,39 @@ input:disabled {
   min-height: 0;
 }
 
+.execution-label-lines {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 4;
+}
+
+.execution-label-lines line {
+  stroke-width: 1.25;
+  stroke-dasharray: 3 3;
+  opacity: 0.72;
+}
+
+.execution-label {
+  position: absolute;
+  z-index: 5;
+  max-width: 178px;
+  padding: 4px 7px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--execution-label-color) 60%, #ffffff);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.16);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.2;
+  pointer-events: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .chart-empty {
   position: absolute;
   inset: 0;
@@ -499,6 +532,10 @@ input[type="range"] {
   color: #ffffff;
 }
 
+.order-open-button {
+  width: 100%;
+}
+
 .secondary-button {
   width: 100%;
   margin-top: 10px;
@@ -594,6 +631,88 @@ input:not([type="range"]) {
   grid-template-columns: 1fr 1fr;
   gap: 10px;
   margin-top: 14px;
+}
+
+.order-status-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(15, 23, 42, 0.52);
+}
+
+.order-modal {
+  width: min(620px, 100%);
+  max-height: min(760px, calc(100vh - 36px));
+  overflow: auto;
+  padding: 16px;
+}
+
+.modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.modal-header h2 {
+  margin: 0 0 4px;
+  font-size: 18px;
+}
+
+.modal-header p {
+  margin: 0;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.order-mode-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.order-modal-status {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 10px;
+  border: 1px solid #dbe3ee;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.order-mode-tabs button {
+  min-height: 38px;
+  border: 1px solid #cbd5e1;
+  border-radius: 7px;
+  background: #f8fafc;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.order-mode-tabs button.active {
+  border-color: #2563eb;
+  background: #eff6ff;
+  color: #1d4ed8;
+  box-shadow: inset 0 0 0 1px #3b82f6;
+}
+
+.order-form-grid {
+  display: grid;
+  gap: 4px;
 }
 
 .buy-button {
@@ -777,6 +896,8 @@ td.signed {
 .app-shell[data-theme="dark"] .top-status span,
 .app-shell[data-theme="dark"] .message-box,
 .app-shell[data-theme="dark"] .secondary-button,
+.app-shell[data-theme="dark"] .order-mode-tabs button,
+.app-shell[data-theme="dark"] .order-modal-status,
 .app-shell[data-theme="dark"] .file-drop,
 .app-shell[data-theme="dark"] .symbol-row,
 .app-shell[data-theme="dark"] select,
@@ -814,6 +935,7 @@ td.signed {
 .app-shell[data-theme="dark"] .data-card dt,
 .app-shell[data-theme="dark"] .metric span,
 .app-shell[data-theme="dark"] .chart-header span,
+.app-shell[data-theme="dark"] .modal-header p,
 .app-shell[data-theme="dark"] .date-note,
 .app-shell[data-theme="dark"] .timeframe-picker span,
 .app-shell[data-theme="dark"] th,
@@ -830,7 +952,8 @@ td.signed {
 
 .app-shell[data-theme="dark"] .symbol-row.selected,
 .app-shell[data-theme="dark"] .speed-group button.active,
-.app-shell[data-theme="dark"] .segmented button.active {
+.app-shell[data-theme="dark"] .segmented button.active,
+.app-shell[data-theme="dark"] .order-mode-tabs button.active {
   border-color: #60a5fa;
   background: #172554;
   color: #bfdbfe;
@@ -845,6 +968,12 @@ td.signed {
 .app-shell[data-theme="dark"] .ma-legend {
   border-color: rgba(71, 85, 105, 0.7);
   background: rgba(15, 23, 42, 0.86);
+}
+
+.app-shell[data-theme="dark"] .execution-label {
+  border-color: color-mix(in srgb, var(--execution-label-color) 70%, #0f172a);
+  background: rgba(15, 23, 42, 0.92);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.34);
 }
 
 .app-shell[data-theme="dark"] .buy-button {

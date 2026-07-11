@@ -31,6 +31,13 @@ function positionsSection(page: Page) {
   return page.locator(".table-section").filter({ has: page.getByRole("heading", { name: "建玉" }) });
 }
 
+async function openOrderModal(page: Page) {
+  await page.getByRole("button", { name: "注文パネルを開く" }).click();
+  const dialog = page.getByRole("dialog", { name: "仮想注文" });
+  await expect(dialog).toBeVisible();
+  return dialog;
+}
+
 test.describe("Replay Trader major flows", () => {
   test("初期表示ではCSV未選択の案内と基本操作が表示される", async ({ page }) => {
     await openApp(page);
@@ -48,8 +55,9 @@ test.describe("Replay Trader major flows", () => {
     await expect(page.getByRole("button", { name: "保存" })).toBeDisabled();
     await expect(page.getByRole("button", { name: "買い", exact: true })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "売り", exact: true })).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "買い注文" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "売り注文" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "注文パネルを開く" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "買い注文" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "売り注文" })).toHaveCount(0);
     await expect(page.getByText("建玉はありません。")).toBeVisible();
     await expect(page.getByText("履歴はありません。")).toBeVisible();
   });
@@ -123,7 +131,8 @@ test.describe("Replay Trader major flows", () => {
 
   test("注文数量は100株単位で増減する", async ({ page }) => {
     await loadSyntheticSample(page);
-    const quantityInput = page.locator(".right-panel label").filter({ hasText: "数量" }).locator("input");
+    const dialog = await openOrderModal(page);
+    const quantityInput = dialog.locator("label").filter({ hasText: "数量" }).locator("input");
 
     await expect(quantityInput).toHaveValue("100");
     await quantityInput.focus();
@@ -134,12 +143,13 @@ test.describe("Replay Trader major flows", () => {
 
   test("現物保有と信用建玉を別行で表示する", async ({ page }) => {
     await loadSyntheticSample(page);
-    const tradeType = page.getByLabel("取引区分");
+    const dialog = await openOrderModal(page);
+    const tradeType = dialog.getByLabel("取引区分");
 
     await tradeType.selectOption("cash");
-    await page.getByRole("button", { name: "買い注文" }).click();
+    await dialog.getByRole("button", { name: "買い注文" }).click();
     await tradeType.selectOption("marginOpen");
-    await page.getByRole("button", { name: "買い注文" }).click();
+    await dialog.getByRole("button", { name: "買い注文" }).click();
 
     const positions = positionsSection(page);
     await expect(positions.getByRole("cell", { name: "現物" })).toBeVisible();
@@ -150,6 +160,21 @@ test.describe("Replay Trader major flows", () => {
     await expect(summaryCard(page).getByText("現物評価額")).toBeVisible();
     await expect(summaryCard(page).getByText("信用建玉評価額")).toBeVisible();
     await expect(page.getByText("約定履歴は右ペインに記録されます")).toBeVisible();
+  });
+
+  test("注文モーダルでIFDOCOを入力できる", async ({ page }) => {
+    await loadSyntheticSample(page);
+    const dialog = await openOrderModal(page);
+
+    await dialog.getByRole("button", { name: "IFDOCO" }).click();
+    await dialog.getByLabel("新規区分").selectOption("marginOpen");
+    await dialog.locator("label").filter({ hasText: "利確価格" }).locator("input").fill("3010");
+    await dialog.locator("label").filter({ hasText: "損切価格" }).locator("input").fill("2990");
+    await dialog.getByRole("button", { name: "買いIFDOCO" }).click();
+
+    await expect(page.getByText("IFDOCO新規注文が約定し、OCO返済条件を登録しました。実注文ではありません。")).toBeVisible();
+    await expect(dialog.getByText("IFDOCO待機")).toBeVisible();
+    await expect(dialog.getByText("1 件")).toBeVisible();
   });
 
   test("日付未指定ではサンプルデータの最近傍日を表示する", async ({ page }) => {
