@@ -3,6 +3,7 @@ import {
   ArrowLeftToLine,
   BarChart3,
   CalendarDays,
+  ClipboardList,
   Database,
   FileUp,
   Moon,
@@ -14,12 +15,13 @@ import {
   SkipBack,
   SkipForward,
   Sun,
+  X,
 } from "lucide-react";
 import { ChartPanel } from "./components/ChartPanel";
 import { filterBarsByDate, filterBarsFromDateLookback, prepareBarsForTimeframe, resolveRequestedDate } from "./lib/bars";
 import { buildSyntheticCsv, CsvParseError, parseCsvText, summarizeSymbol } from "./lib/csv";
 import { formatPercent, formatPrice, formatSignedYen, formatVolume, formatYen } from "./lib/format";
-import { getReplayAdvanceIntervalMs, getTimeframeDurationMs } from "./lib/replay";
+import { getIntrabarWalkIntervalMs, getReplayAdvanceIntervalMs, getTimeframeDurationMs } from "./lib/replay";
 import { clearSession, loadSession, saveSession } from "./lib/storage";
 import {
   evaluateCashMarketValue,
@@ -41,9 +43,10 @@ import "./styles.css";
 const SPEEDS = [1, 5, 10, 30, 60];
 const MA_PERIODS: [number, number, number] = [5, 25, 60];
 const LOT_SIZE = 100;
-const WALK_INTERVAL_MS = 120;
 const CHART_LOOKBACK_DAYS = 2;
 const EMPTY_POSITION_PNL_SUMMARY = { buy: 0, sell: 0, total: 0 };
+type OrderMode = "normal" | "ifdoco";
+type IfdEntryTradeType = "cash" | "marginOpen";
 
 interface IntrabarWalkState {
   time: Bar["time"];
@@ -62,6 +65,17 @@ interface DailyMarketStats {
   changePercent: number | null;
 }
 
+interface PendingOcoOrder {
+  id: string;
+  symbol: string;
+  closeSide: Side;
+  closeTradeType: "cash" | "marginClose";
+  quantity: number;
+  targetPrice: number;
+  stopPrice: number;
+  createdReplayIndex: number;
+}
+
 function App() {
   const [symbols, setSymbols] = useState<SymbolData[]>([]);
   const [selectedSymbolId, setSelectedSymbolId] = useState<string>();
@@ -77,6 +91,15 @@ function App() {
   const [orderType, setOrderType] = useState<"market" | "limit">("market");
   const [quantity, setQuantity] = useState(100);
   const [limitPrice, setLimitPrice] = useState("");
+  const [isOrderModalOpen, setIsOrderModalOpen] = useState(false);
+  const [orderMode, setOrderMode] = useState<OrderMode>("normal");
+  const [ifdTradeType, setIfdTradeType] = useState<IfdEntryTradeType>("marginOpen");
+  const [ifdOrderType, setIfdOrderType] = useState<"market" | "limit">("market");
+  const [ifdQuantity, setIfdQuantity] = useState(100);
+  const [ifdLimitPrice, setIfdLimitPrice] = useState("");
+  const [ifdTargetPrice, setIfdTargetPrice] = useState("");
+  const [ifdStopPrice, setIfdStopPrice] = useState("");
+  const [pendingOcoOrders, setPendingOcoOrders] = useState<PendingOcoOrder[]>([]);
   const [walkState, setWalkState] = useState<IntrabarWalkState | null>(null);
   const [isCsvDragging, setIsCsvDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -133,9 +156,15 @@ function App() {
 
     setWalkState(createInitialWalkState(currentBar));
     const advanceIntervalMs = getReplayAdvanceIntervalMs(timeframe, speed);
+    const walkIntervalMs = getIntrabarWalkIntervalMs(
+      timeframe,
+      speed,
+      currentBar.volume,
+      bars.map((bar) => bar.volume),
+    );
     const walkTimer = window.setInterval(() => {
       setWalkState((value) => nextWalkState(value, currentBar, timeframe, speed));
-    }, WALK_INTERVAL_MS);
+    }, walkIntervalMs);
     const advanceTimer = window.setInterval(() => {
       setReplayIndex((value) => {
         if (value >= bars.length - 1) {
@@ -151,6 +180,46 @@ function App() {
       window.clearInterval(advanceTimer);
     };
   }, [bars.length, currentBar, playing, speed, timeframe]);
+
+  useEffect(() => {
+    if (!currentBar) return;
+    const triggeredMessages: string[] = [];
+    setPendingOcoOrders((current) => {
+      const remaining: PendingOcoOrder[] = [];
+      for (const order of current) {
+        if (order.symbol !== selectedSymbolId || currentIndex <= order.createdReplayIndex) {
+          remaining.push(order);
+          continue;
+        }
+
+        const targetHit = order.closeSide === "sell" ? currentBar.high >= order.targetPrice : currentBar.low <= order.targetPrice;
+        const stopHit = order.closeSide === "sell" ? currentBar.low <= order.stopPrice : currentBar.high >= order.stopPrice;
+        const triggerPrice = stopHit ? order.stopPrice : targetHit ? order.targetPrice : null;
+        if (triggerPrice == null) {
+          remaining.push(order);
+          continue;
+        }
+
+        setTrading((currentTrading) =>
+          submitVirtualOrder(currentTrading, {
+            symbol: order.symbol,
+            side: order.closeSide,
+            tradeType: order.closeTradeType,
+            orderType: "limit",
+            quantity: order.quantity,
+            limitPrice: triggerPrice,
+            bar: currentBar,
+            replayIndex: currentIndex,
+          }),
+        );
+        triggeredMessages.push(`IFDOCOのOCO返済を約定しました: ${formatPrice(triggerPrice)}`);
+      }
+      return remaining;
+    });
+    if (triggeredMessages.length > 0) {
+      setParseMessage(triggeredMessages.join("\n"));
+    }
+  }, [currentBar, currentIndex, selectedSymbolId]);
 
   useEffect(() => {
     if (bars.length > 0 && replayIndex > bars.length - 1) {
@@ -290,6 +359,76 @@ function App() {
       }
       return next;
     });
+  }
+
+  function placeIfdOco(entrySide: Side) {
+    if (!selectedSymbol || !currentBar) {
+      setParseMessage("注文前にCSVを読み込んでリプレイ位置を選択してください。");
+      return;
+    }
+    if (ifdTradeType === "cash" && entrySide === "sell") {
+      setParseMessage("現物のIFDOCOは買い新規のみ対応しています。");
+      return;
+    }
+
+    const normalizedQuantity = normalizeLotQuantity(ifdQuantity);
+    const activeBar = displayCurrentBar ?? currentBar;
+    const entryReferencePrice = ifdOrderType === "limit" ? Number(ifdLimitPrice) : activeBar.close;
+    const targetPrice = Number(ifdTargetPrice);
+    const stopPrice = Number(ifdStopPrice);
+    setIfdQuantity(normalizedQuantity);
+
+    if (![entryReferencePrice, targetPrice, stopPrice].every(Number.isFinite)) {
+      setParseMessage("IFDOCOの新規価格、利確価格、損切価格を確認してください。");
+      return;
+    }
+    if (entrySide === "buy" && !(targetPrice > entryReferencePrice && stopPrice < entryReferencePrice)) {
+      setParseMessage("買いIFDOCOは利確価格を新規価格より上、損切価格を新規価格より下にしてください。");
+      return;
+    }
+    if (entrySide === "sell" && !(targetPrice < entryReferencePrice && stopPrice > entryReferencePrice)) {
+      setParseMessage("売りIFDOCOは利確価格を新規価格より下、損切価格を新規価格より上にしてください。");
+      return;
+    }
+
+    const next = submitVirtualOrder(trading, {
+      symbol: selectedSymbol.id,
+      side: entrySide,
+      tradeType: ifdTradeType,
+      orderType: ifdOrderType,
+      quantity: normalizedQuantity,
+      limitPrice: ifdOrderType === "limit" ? entryReferencePrice : undefined,
+      bar: {
+        ...activeBar,
+        datetime: displayDatetime ?? activeBar.datetime,
+      },
+      replayIndex: currentIndex,
+    });
+    setTrading(next);
+
+    const latestOrder = next.orders[0];
+    const latestExecution = next.executions[0];
+    if (latestOrder?.status === "rejected" || latestExecution == null) {
+      setParseMessage(`IFDOCO新規注文を拒否しました: ${latestOrder?.message ?? "条件を確認してください。"}`);
+      return;
+    }
+
+    const closeSide: Side = entrySide === "buy" ? "sell" : "buy";
+    const closeTradeType: PendingOcoOrder["closeTradeType"] = ifdTradeType === "cash" ? "cash" : "marginClose";
+    setPendingOcoOrders((currentOco) => [
+      {
+        id: crypto.randomUUID(),
+        symbol: selectedSymbol.id,
+        closeSide,
+        closeTradeType,
+        quantity: normalizedQuantity,
+        targetPrice,
+        stopPrice,
+        createdReplayIndex: currentIndex,
+      },
+      ...currentOco,
+    ]);
+    setParseMessage("IFDOCO新規注文が約定し、OCO返済条件を登録しました。実注文ではありません。");
   }
 
   return (
@@ -562,50 +701,13 @@ function App() {
           <section className="panel-section">
             <h2>仮想注文</h2>
             <p className="notice">トレーニング用の紙トレードです。実際の注文は発注されません。</p>
-            <label>
-              取引区分
-              <select value={tradeType} onChange={(event) => setTradeType(event.currentTarget.value as TradeType)}>
-                <option value="cash">現物</option>
-                <option value="marginOpen">信用新規</option>
-                <option value="marginClose">信用返済</option>
-              </select>
-            </label>
-            <div className="segmented">
-              <button className={orderType === "market" ? "active" : ""} type="button" onClick={() => setOrderType("market")}>
-                成行
-              </button>
-              <button className={orderType === "limit" ? "active" : ""} type="button" onClick={() => setOrderType("limit")}>
-                指値
-              </button>
-            </div>
-            <label>
-              数量
-              <input
-                min={LOT_SIZE}
-                step={LOT_SIZE}
-                type="number"
-                value={quantity}
-                onBlur={() => setQuantity((value) => normalizeLotQuantity(value))}
-                onChange={(event) => setQuantity(Number(event.currentTarget.value))}
-              />
-            </label>
-            <label>
-              指値価格
-              <input
-                disabled={orderType === "market"}
-                inputMode="decimal"
-                placeholder={currentBar ? formatPrice(currentBar.close) : "-"}
-                value={limitPrice}
-                onChange={(event) => setLimitPrice(event.currentTarget.value)}
-              />
-            </label>
-            <div className="order-actions">
-              <button type="button" className="buy-button" onClick={() => placeOrder("buy")}>
-                買い注文
-              </button>
-              <button type="button" className="sell-button" onClick={() => placeOrder("sell")}>
-                売り注文
-              </button>
+            <button className="primary-button order-open-button" type="button" onClick={() => setIsOrderModalOpen(true)}>
+              <ClipboardList size={16} />
+              注文パネルを開く
+            </button>
+            <div className="order-status-list">
+              <Metric label="現在値" value={displayCurrentBar ? formatPrice(displayCurrentBar.close) : "-"} />
+              <Metric label="IFDOCO待機" value={`${pendingOcoOrders.length.toLocaleString("ja-JP")} 件`} />
             </div>
           </section>
 
@@ -714,6 +816,152 @@ function App() {
           </section>
         </aside>
       </section>
+
+      {isOrderModalOpen ? (
+        <div className="modal-backdrop" role="presentation" onMouseDown={() => setIsOrderModalOpen(false)}>
+          <section className="order-modal panel" role="dialog" aria-modal="true" aria-label="仮想注文" onMouseDown={(event) => event.stopPropagation()}>
+            <header className="modal-header">
+              <div>
+                <h2>仮想注文</h2>
+                <p>通常注文とIFDOCOを紙トレードとして記録します。</p>
+              </div>
+              <button className="icon-button" type="button" aria-label="閉じる" onClick={() => setIsOrderModalOpen(false)}>
+                <X size={17} />
+              </button>
+            </header>
+            <div className="order-mode-tabs" role="tablist" aria-label="注文方式">
+              <button className={orderMode === "normal" ? "active" : ""} type="button" onClick={() => setOrderMode("normal")}>
+                通常注文
+              </button>
+              <button className={orderMode === "ifdoco" ? "active" : ""} type="button" onClick={() => setOrderMode("ifdoco")}>
+                IFDOCO
+              </button>
+            </div>
+            <div className="order-modal-status">
+              <Metric label="現在値" value={displayCurrentBar ? formatPrice(displayCurrentBar.close) : "-"} />
+              <Metric label="IFDOCO待機" value={`${pendingOcoOrders.length.toLocaleString("ja-JP")} 件`} />
+            </div>
+
+            {orderMode === "normal" ? (
+              <div className="order-form-grid">
+                <label>
+                  取引区分
+                  <select value={tradeType} onChange={(event) => setTradeType(event.currentTarget.value as TradeType)}>
+                    <option value="cash">現物</option>
+                    <option value="marginOpen">信用新規</option>
+                    <option value="marginClose">信用返済</option>
+                  </select>
+                </label>
+                <div className="segmented">
+                  <button className={orderType === "market" ? "active" : ""} type="button" onClick={() => setOrderType("market")}>
+                    成行
+                  </button>
+                  <button className={orderType === "limit" ? "active" : ""} type="button" onClick={() => setOrderType("limit")}>
+                    指値
+                  </button>
+                </div>
+                <label>
+                  数量
+                  <input
+                    min={LOT_SIZE}
+                    step={LOT_SIZE}
+                    type="number"
+                    value={quantity}
+                    onBlur={() => setQuantity((value) => normalizeLotQuantity(value))}
+                    onChange={(event) => setQuantity(Number(event.currentTarget.value))}
+                  />
+                </label>
+                <label>
+                  指値価格
+                  <input
+                    disabled={orderType === "market"}
+                    inputMode="decimal"
+                    placeholder={displayCurrentBar ? formatPrice(displayCurrentBar.close) : "-"}
+                    value={limitPrice}
+                    onChange={(event) => setLimitPrice(event.currentTarget.value)}
+                  />
+                </label>
+                <div className="order-actions">
+                  <button type="button" className="buy-button" onClick={() => placeOrder("buy")}>
+                    買い注文
+                  </button>
+                  <button type="button" className="sell-button" onClick={() => placeOrder("sell")}>
+                    売り注文
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="order-form-grid">
+                <label>
+                  新規区分
+                  <select value={ifdTradeType} onChange={(event) => setIfdTradeType(event.currentTarget.value as IfdEntryTradeType)}>
+                    <option value="marginOpen">信用新規</option>
+                    <option value="cash">現物買い</option>
+                  </select>
+                </label>
+                <div className="segmented">
+                  <button className={ifdOrderType === "market" ? "active" : ""} type="button" onClick={() => setIfdOrderType("market")}>
+                    成行
+                  </button>
+                  <button className={ifdOrderType === "limit" ? "active" : ""} type="button" onClick={() => setIfdOrderType("limit")}>
+                    指値
+                  </button>
+                </div>
+                <label>
+                  数量
+                  <input
+                    min={LOT_SIZE}
+                    step={LOT_SIZE}
+                    type="number"
+                    value={ifdQuantity}
+                    onBlur={() => setIfdQuantity((value) => normalizeLotQuantity(value))}
+                    onChange={(event) => setIfdQuantity(Number(event.currentTarget.value))}
+                  />
+                </label>
+                <label>
+                  新規指値
+                  <input
+                    disabled={ifdOrderType === "market"}
+                    inputMode="decimal"
+                    placeholder={displayCurrentBar ? formatPrice(displayCurrentBar.close) : "-"}
+                    value={ifdLimitPrice}
+                    onChange={(event) => setIfdLimitPrice(event.currentTarget.value)}
+                  />
+                </label>
+                <label>
+                  利確価格
+                  <input
+                    inputMode="decimal"
+                    placeholder={displayCurrentBar ? formatPrice(displayCurrentBar.close * 1.01) : "-"}
+                    value={ifdTargetPrice}
+                    onChange={(event) => setIfdTargetPrice(event.currentTarget.value)}
+                  />
+                </label>
+                <label>
+                  損切価格
+                  <input
+                    inputMode="decimal"
+                    placeholder={displayCurrentBar ? formatPrice(displayCurrentBar.close * 0.99) : "-"}
+                    value={ifdStopPrice}
+                    onChange={(event) => setIfdStopPrice(event.currentTarget.value)}
+                  />
+                </label>
+                <p className="notice compact-notice">
+                  新規が現在バーで約定した場合にOCO返済を登録します。同一バーでの返済判定は行いません。
+                </p>
+                <div className="order-actions">
+                  <button type="button" className="buy-button" onClick={() => placeIfdOco("buy")}>
+                    買いIFDOCO
+                  </button>
+                  <button type="button" className="sell-button" disabled={ifdTradeType === "cash"} onClick={() => placeIfdOco("sell")}>
+                    売りIFDOCO
+                  </button>
+                </div>
+              </div>
+            )}
+          </section>
+        </div>
+      ) : null}
 
       <footer className="app-footer">
         <span>データソース: ユーザー選択CSVのみ</span>

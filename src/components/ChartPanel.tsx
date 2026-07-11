@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CandlestickSeries,
   ColorType,
@@ -14,7 +14,7 @@ import {
   type WhitespaceData,
 } from "lightweight-charts";
 import { calculateVisibleMovingAverage } from "../lib/bars";
-import { buildExecutionMarkers } from "../lib/chartMarkers";
+import { buildExecutionMarkerLabels, buildExecutionMarkers } from "../lib/chartMarkers";
 import type { Bar, Execution, ThemeMode, Timeframe } from "../types";
 
 interface ChartPanelProps {
@@ -29,6 +29,18 @@ interface ChartPanelProps {
 
 const MA_COLORS = ["#f59e0b", "#2563eb", "#7c3aed"] as const;
 
+interface PositionedExecutionLabel {
+  id: string;
+  text: string;
+  color: string;
+  markerX: number;
+  markerY: number;
+  labelX: number;
+  labelY: number;
+  anchorX: number;
+  anchorY: number;
+}
+
 export function ChartPanel({ bars, maSourceBars, executions, maPeriods, themeMode, timeframe, viewportKey }: ChartPanelProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -37,6 +49,7 @@ export function ChartPanel({ bars, maSourceBars, executions, maPeriods, themeMod
   const maRefs = useRef<ISeriesApi<"Line">[]>([]);
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const appliedViewportKeyRef = useRef<string>("");
+  const [executionLabels, setExecutionLabels] = useState<PositionedExecutionLabel[]>([]);
 
   const executionTimes = useMemo(() => new Set(executions.map((execution) => execution.time)), [executions]);
   const isDark = themeMode === "dark";
@@ -186,9 +199,93 @@ export function ChartPanel({ bars, maSourceBars, executions, maPeriods, themeMod
     markersRef.current?.setMarkers(buildExecutionMarkers(executions, timeframe));
   }, [executions, timeframe]);
 
+  useEffect(() => {
+    const chart = chartRef.current;
+    const candleSeries = candleRef.current;
+    const container = containerRef.current;
+    if (!chart || !candleSeries || !container) {
+      setExecutionLabels([]);
+      return;
+    }
+
+    const updateLabels = () => {
+      const bounds = container.getBoundingClientRect();
+      const labels = buildExecutionMarkerLabels(executions, timeframe)
+        .map((label, index): PositionedExecutionLabel | null => {
+          const markerX = chart.timeScale().timeToCoordinate(label.time);
+          const markerY = candleSeries.priceToCoordinate(label.price);
+          if (markerX == null || markerY == null) return null;
+
+          const estimatedWidth = Math.min(176, Math.max(78, label.text.length * 9 + 24));
+          const showOnLeft = markerX > bounds.width - estimatedWidth - 54;
+          const labelX = showOnLeft ? Math.max(10, markerX - estimatedWidth - 24) : Math.min(bounds.width - estimatedWidth - 10, markerX + 24);
+          const preferredY = label.verticalPreference === "above" ? markerY - 42 : markerY + 22;
+          const staggerY = (index % 3) * 7;
+          const labelY = Math.min(bounds.height - 34, Math.max(10, preferredY + staggerY));
+          return {
+            id: label.id,
+            text: label.text,
+            color: label.color,
+            markerX,
+            markerY,
+            labelX,
+            labelY,
+            anchorX: showOnLeft ? labelX + estimatedWidth : labelX,
+            anchorY: labelY + 13,
+          };
+        })
+        .filter((label): label is PositionedExecutionLabel => label != null);
+      setExecutionLabels(labels);
+    };
+
+    const scheduleUpdate = () => window.requestAnimationFrame(updateLabels);
+    const timeScale = chart.timeScale();
+    const resizeObserver = new ResizeObserver(scheduleUpdate);
+    timeScale.subscribeVisibleLogicalRangeChange(scheduleUpdate);
+    resizeObserver.observe(container);
+    container.addEventListener("pointerup", scheduleUpdate);
+    container.addEventListener("wheel", scheduleUpdate, { passive: true });
+    scheduleUpdate();
+
+    return () => {
+      timeScale.unsubscribeVisibleLogicalRangeChange(scheduleUpdate);
+      resizeObserver.disconnect();
+      container.removeEventListener("pointerup", scheduleUpdate);
+      container.removeEventListener("wheel", scheduleUpdate);
+    };
+  }, [bars, executions, timeframe]);
+
   return (
     <div className="chart-shell">
       <div ref={containerRef} className="chart-canvas" />
+      {executionLabels.length > 0 ? (
+        <svg className="execution-label-lines" aria-hidden="true">
+          {executionLabels.map((label) => (
+            <line
+              key={label.id}
+              x1={label.markerX}
+              y1={label.markerY}
+              x2={label.anchorX}
+              y2={label.anchorY}
+              stroke={label.color}
+            />
+          ))}
+        </svg>
+      ) : null}
+      {executionLabels.map((label) => (
+        <span
+          className="execution-label"
+          key={label.id}
+          style={{
+            color: label.color,
+            left: label.labelX,
+            top: label.labelY,
+            ["--execution-label-color" as string]: label.color,
+          }}
+        >
+          {label.text}
+        </span>
+      ))}
       {bars.length > 0 ? (
         <div className="ma-legend">
           {maPeriods.map((period, index) => (

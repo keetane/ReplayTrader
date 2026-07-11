@@ -7,6 +7,15 @@ const PROFIT_CLOSE_COLOR = "#22c55e";
 const LOSS_CLOSE_COLOR = "#ef4444";
 const FLAT_CLOSE_COLOR = "#94a3b8";
 
+export interface ExecutionMarkerLabel {
+  id: string;
+  time: Time;
+  price: number;
+  text: string;
+  color: string;
+  verticalPreference: "above" | "below";
+}
+
 export function buildExecutionMarkers(executions: Execution[], timeframe: Timeframe): SeriesMarker<Time>[] {
   return executions
     .map((execution): SeriesMarker<Time> | null => {
@@ -20,7 +29,8 @@ export function buildExecutionMarkers(executions: Execution[], timeframe: Timefr
           time,
           position: "atPriceMiddle",
           price: execution.price,
-          ...closeMarker,
+          shape: closeMarker.shape,
+          color: closeMarker.color,
           size: executionMarkerSize(execution.quantity),
         };
       }
@@ -32,11 +42,31 @@ export function buildExecutionMarkers(executions: Execution[], timeframe: Timefr
         price: execution.price,
         shape: execution.side === "buy" ? "arrowUp" : "arrowDown",
         color: execution.side === "buy" ? OPEN_BUY_COLOR : OPEN_SELL_COLOR,
-        text: `${execution.side === "buy" ? "買" : "売"} ${formatQuantity(execution.quantity)}`,
         size: executionMarkerSize(execution.quantity),
       };
     })
     .filter((marker): marker is SeriesMarker<Time> => marker != null)
+    .sort((first, second) => Number(first.time) - Number(second.time));
+}
+
+export function buildExecutionMarkerLabels(executions: Execution[], timeframe: Timeframe): ExecutionMarkerLabel[] {
+  return executions
+    .map((execution): ExecutionMarkerLabel | null => {
+      const time = executionMarkerTime(execution.time, timeframe);
+      if (time == null) return null;
+      const closeMarker = buildCloseMarker(execution);
+      const isClose = closeMarker != null;
+      const color = closeMarker?.color ?? (execution.side === "buy" ? OPEN_BUY_COLOR : OPEN_SELL_COLOR);
+      return {
+        id: execution.id,
+        time,
+        price: execution.price,
+        text: closeMarker?.text ?? `${execution.side === "buy" ? "買" : "売"} ${formatQuantity(execution.quantity)}`,
+        color,
+        verticalPreference: isClose || execution.side === "sell" ? "above" : "below",
+      };
+    })
+    .filter((label): label is ExecutionMarkerLabel => label != null)
     .sort((first, second) => Number(first.time) - Number(second.time));
 }
 
