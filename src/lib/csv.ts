@@ -80,7 +80,7 @@ export function parseCsvText(text: string, fileName = "uploaded.csv"): ParseResu
 
 export function buildSyntheticCsv(): string {
   const rows = ["Datetime,Close,High,Low,Open,Volume"];
-  let price = 3000;
+  let price = 2800;
   const startUtc = Date.UTC(2024, 4, 17, 0, 0, 0);
 
   for (let i = 0; i < 220; i += 1) {
