@@ -387,6 +387,23 @@ input:disabled {
   min-height: 0;
 }
 
+.execution-marker-outlines {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 4;
+}
+
+.execution-marker-outline {
+  fill: none;
+  stroke: #020617;
+  stroke-linejoin: round;
+  stroke-width: 2.4;
+  filter: drop-shadow(0 0 1px rgba(255, 255, 255, 0.7));
+}
+
 .execution-label-lines {
   position: absolute;
   inset: 0;
@@ -639,21 +656,14 @@ input:not([type="range"]) {
   margin-top: 12px;
 }
 
-.modal-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 20;
-  display: grid;
-  place-items: center;
-  padding: 18px;
-  background: rgba(15, 23, 42, 0.52);
-}
-
 .order-modal {
-  width: min(620px, 100%);
-  max-height: min(760px, calc(100vh - 36px));
+  position: fixed;
+  z-index: 20;
+  width: min(420px, calc(100vw - 24px));
+  max-height: min(760px, calc(100vh - 24px));
   overflow: auto;
   padding: 16px;
+  box-shadow: 0 22px 56px rgba(2, 6, 23, 0.34);
 }
 
 .modal-header {
@@ -673,6 +683,16 @@ input:not([type="range"]) {
   margin: 0;
   color: #64748b;
   font-size: 12px;
+}
+
+.draggable-header {
+  cursor: move;
+  user-select: none;
+  touch-action: none;
+}
+
+.draggable-header .icon-button {
+  cursor: pointer;
 }
 
 .order-mode-tabs {

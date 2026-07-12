@@ -1,4 +1,4 @@
-import { type DragEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type DragEvent, type PointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeftToLine,
   BarChart3,
@@ -21,7 +21,14 @@ import { ChartPanel } from "./components/ChartPanel";
 import { filterBarsByDate, filterBarsFromDateLookback, prepareBarsForTimeframe, resolveRequestedDate } from "./lib/bars";
 import { buildSyntheticCsv, CsvParseError, parseCsvText, summarizeSymbol } from "./lib/csv";
 import { formatPercent, formatPrice, formatSignedYen, formatVolume, formatYen } from "./lib/format";
-import { getIntrabarWalkIntervalMs, getReplayAdvanceIntervalMs, getTimeframeDurationMs } from "./lib/replay";
+import {
+  clampToTseTick,
+  getIntrabarDisplayVolume,
+  getIntrabarWalkIntervalMs,
+  getReplayAdvanceIntervalMs,
+  getTimeframeDurationMs,
+  moveToAdjacentTseTick,
+} from "./lib/replay";
 import { clearSession, loadSession, saveSession } from "./lib/storage";
 import {
   evaluateCashMarketValue,
@@ -45,6 +52,9 @@ const MA_PERIODS: [number, number, number] = [5, 25, 60];
 const LOT_SIZE = 100;
 const CHART_LOOKBACK_DAYS = 2;
 const EMPTY_POSITION_PNL_SUMMARY = { buy: 0, sell: 0, total: 0 };
+const ORDER_PANEL_WIDTH = 420;
+const ORDER_PANEL_MAX_HEIGHT = 760;
+const ORDER_PANEL_MARGIN = 12;
 type OrderMode = "normal" | "ifdoco";
 type IfdEntryTradeType = "cash" | "marginOpen";
 
@@ -53,6 +63,7 @@ interface IntrabarWalkState {
   close: number;
   high: number;
   low: number;
+  volume: number;
   elapsedMs: number;
   startedAtMs: number;
 }
@@ -76,6 +87,17 @@ interface PendingOcoOrder {
   createdReplayIndex: number;
 }
 
+interface FloatingPanelPosition {
+  x: number;
+  y: number;
+}
+
+interface DragPanelState {
+  pointerId: number;
+  offsetX: number;
+  offsetY: number;
+}
+
 function App() {
   const [symbols, setSymbols] = useState<SymbolData[]>([]);
   const [selectedSymbolId, setSelectedSymbolId] = useState<string>();
@@ -92,6 +114,7 @@ function App() {
   const [quantity, setQuantity] = useState(100);
   const [limitPrice, setLimitPrice] = useState("");
   const [isOrderModalOpen, setIsOrderModalOpen] = useState(false);
+  const [orderPanelPosition, setOrderPanelPosition] = useState<FloatingPanelPosition | null>(null);
   const [orderMode, setOrderMode] = useState<OrderMode>("normal");
   const [ifdTradeType, setIfdTradeType] = useState<IfdEntryTradeType>("marginOpen");
   const [ifdOrderType, setIfdOrderType] = useState<"market" | "limit">("market");
@@ -103,6 +126,9 @@ function App() {
   const [walkState, setWalkState] = useState<IntrabarWalkState | null>(null);
   const [isCsvDragging, setIsCsvDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const orderOpenButtonRef = useRef<HTMLButtonElement | null>(null);
+  const orderPanelDragRef = useRef<DragPanelState | null>(null);
+  const orderPanelDragCleanupRef = useRef<(() => void) | null>(null);
 
   const selectedSymbol = symbols.find((symbol) => symbol.id === selectedSymbolId);
   const resolvedDate = useMemo(
@@ -135,11 +161,13 @@ function App() {
     () => calculateDailyMarketStats(bars, currentIndex, displayCurrentBar, timeframeBars, resolvedDate.activeDate),
     [bars, currentIndex, displayCurrentBar, timeframeBars, resolvedDate.activeDate],
   );
-  const unrealizedPnl = currentBar ? evaluateUnrealizedPnl(trading.positions, currentBar.close) : 0;
-  const positionPnlSummary = currentBar ? evaluatePositionPnlSummary(trading.positions, currentBar.close) : EMPTY_POSITION_PNL_SUMMARY;
-  const marginUnrealizedPnl = currentBar ? evaluateMarginUnrealizedPnl(trading.positions, currentBar.close) : 0;
-  const cashMarketValue = currentBar ? evaluateCashMarketValue(trading.positions, currentBar.close) : 0;
-  const marginExposure = currentBar ? evaluateMarginExposure(trading.positions, currentBar.close) : 0;
+  const valuationPrice = displayCurrentBar?.close;
+  const unrealizedPnl = valuationPrice == null ? 0 : evaluateUnrealizedPnl(trading.positions, valuationPrice);
+  const positionPnlSummary =
+    valuationPrice == null ? EMPTY_POSITION_PNL_SUMMARY : evaluatePositionPnlSummary(trading.positions, valuationPrice);
+  const marginUnrealizedPnl = valuationPrice == null ? 0 : evaluateMarginUnrealizedPnl(trading.positions, valuationPrice);
+  const cashMarketValue = valuationPrice == null ? 0 : evaluateCashMarketValue(trading.positions, valuationPrice);
+  const marginExposure = valuationPrice == null ? 0 : evaluateMarginExposure(trading.positions, valuationPrice);
   const accountValue = trading.cash + cashMarketValue + marginUnrealizedPnl;
   const totalPnl = trading.realizedPnl + unrealizedPnl;
   const maintenanceRatio = evaluateMaintenanceRatio(accountValue, marginExposure);
@@ -154,12 +182,13 @@ function App() {
       return;
     }
 
-    setWalkState(createInitialWalkState(currentBar));
+    setWalkState((value) => nextWalkState(value, currentBar, timeframe, speed));
     const advanceIntervalMs = getReplayAdvanceIntervalMs(timeframe, speed);
+    const walkVolume = currentIndex === 0 ? bars[1]?.volume ?? currentBar.volume : currentBar.volume;
     const walkIntervalMs = getIntrabarWalkIntervalMs(
       timeframe,
       speed,
-      currentBar.volume,
+      walkVolume,
       bars.map((bar) => bar.volume),
     );
     const walkTimer = window.setInterval(() => {
@@ -179,7 +208,13 @@ function App() {
       window.clearInterval(walkTimer);
       window.clearInterval(advanceTimer);
     };
-  }, [bars.length, currentBar, playing, speed, timeframe]);
+  }, [bars, bars.length, currentBar, currentIndex, playing, speed, timeframe]);
+
+  useEffect(() => {
+    return () => {
+      orderPanelDragCleanupRef.current?.();
+    };
+  }, []);
 
   useEffect(() => {
     if (!currentBar) return;
@@ -431,6 +466,52 @@ function App() {
     setParseMessage("IFDOCO新規注文が約定し、OCO返済条件を登録しました。実注文ではありません。");
   }
 
+  function openOrderPanel() {
+    setOrderPanelPosition(calculateOrderPanelPosition(orderOpenButtonRef.current));
+    setIsOrderModalOpen(true);
+  }
+
+  function startOrderPanelDrag(event: PointerEvent<HTMLElement>) {
+    if (event.button !== 0) return;
+    const panel = event.currentTarget.closest<HTMLElement>(".order-modal");
+    if (!panel) return;
+    const rect = panel.getBoundingClientRect();
+    const dragState = {
+      pointerId: event.pointerId,
+      offsetX: event.clientX - rect.left,
+      offsetY: event.clientY - rect.top,
+    };
+    orderPanelDragRef.current = dragState;
+
+    const handlePointerMove = (moveEvent: globalThis.PointerEvent) => {
+      if (moveEvent.pointerId !== dragState.pointerId) return;
+      setOrderPanelPosition(
+        clampOrderPanelPosition({
+          x: moveEvent.clientX - dragState.offsetX,
+          y: moveEvent.clientY - dragState.offsetY,
+        }),
+      );
+    };
+    const cleanup = () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerEnd);
+      window.removeEventListener("pointercancel", handlePointerEnd);
+      orderPanelDragRef.current = null;
+      orderPanelDragCleanupRef.current = null;
+    };
+    const handlePointerEnd = (endEvent: globalThis.PointerEvent) => {
+      if (endEvent.pointerId !== dragState.pointerId) return;
+      cleanup();
+    };
+
+    orderPanelDragCleanupRef.current?.();
+    orderPanelDragCleanupRef.current = cleanup;
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerEnd);
+    window.addEventListener("pointercancel", handlePointerEnd);
+    event.preventDefault();
+  }
+
   return (
     <main className="app-shell" data-theme={themeMode}>
       <header className="top-bar">
@@ -616,6 +697,8 @@ function App() {
             themeMode={themeMode}
             timeframe={timeframe}
             viewportKey={chartViewportKey}
+            canTogglePlayback={bars.length > 0}
+            onTogglePlayback={() => setPlaying((value) => !value)}
           />
 
           <div className="replay-panel panel">
@@ -701,7 +784,7 @@ function App() {
           <section className="panel-section">
             <h2>仮想注文</h2>
             <p className="notice">トレーニング用の紙トレードです。実際の注文は発注されません。</p>
-            <button className="primary-button order-open-button" type="button" onClick={() => setIsOrderModalOpen(true)}>
+            <button ref={orderOpenButtonRef} className="primary-button order-open-button" type="button" onClick={openOrderPanel}>
               <ClipboardList size={16} />
               注文パネルを開く
             </button>
@@ -774,8 +857,8 @@ function App() {
                       <td>{formatPositionSide(position.product, position.side)}</td>
                       <td>{position.quantity}</td>
                       <td>{formatPrice(position.entryPrice)}</td>
-                      <td className={currentBar ? "signed" : ""}>
-                        {currentBar ? formatSignedYen(evaluatePositionUnrealizedPnl(position, currentBar.close)) : "-"}
+                      <td className={valuationPrice == null ? "" : "signed"}>
+                        {valuationPrice == null ? "-" : formatSignedYen(evaluatePositionUnrealizedPnl(position, valuationPrice))}
                       </td>
                       <td>{position.openedDate}</td>
                     </tr>
@@ -818,14 +901,31 @@ function App() {
       </section>
 
       {isOrderModalOpen ? (
-        <div className="modal-backdrop" role="presentation" onMouseDown={() => setIsOrderModalOpen(false)}>
-          <section className="order-modal panel" role="dialog" aria-modal="true" aria-label="仮想注文" onMouseDown={(event) => event.stopPropagation()}>
-            <header className="modal-header">
+        <section
+          className="order-modal panel"
+          role="dialog"
+          aria-modal="false"
+          aria-label="仮想注文"
+          style={{
+            left: orderPanelPosition?.x ?? ORDER_PANEL_MARGIN,
+            top: orderPanelPosition?.y ?? ORDER_PANEL_MARGIN,
+          }}
+        >
+            <header
+              className="modal-header draggable-header"
+              onPointerDown={startOrderPanelDrag}
+            >
               <div>
                 <h2>仮想注文</h2>
                 <p>通常注文とIFDOCOを紙トレードとして記録します。</p>
               </div>
-              <button className="icon-button" type="button" aria-label="閉じる" onClick={() => setIsOrderModalOpen(false)}>
+              <button
+                className="icon-button"
+                type="button"
+                aria-label="閉じる"
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={() => setIsOrderModalOpen(false)}
+              >
                 <X size={17} />
               </button>
             </header>
@@ -959,8 +1059,7 @@ function App() {
                 </div>
               </div>
             )}
-          </section>
-        </div>
+        </section>
       ) : null}
 
       <footer className="app-footer">
@@ -997,6 +1096,31 @@ function Metric({ label, value, strong }: { label: string; value: string; strong
       <strong className={strong ? "signed" : ""}>{value}</strong>
     </div>
   );
+}
+
+function calculateOrderPanelPosition(anchor: HTMLElement | null): FloatingPanelPosition {
+  const fallback = {
+    x: window.innerWidth - ORDER_PANEL_WIDTH - ORDER_PANEL_MARGIN,
+    y: 86,
+  };
+  if (!anchor) return clampOrderPanelPosition(fallback);
+
+  const rect = anchor.getBoundingClientRect();
+  return clampOrderPanelPosition({
+    x: rect.right - ORDER_PANEL_WIDTH,
+    y: rect.top,
+  });
+}
+
+function clampOrderPanelPosition(position: FloatingPanelPosition): FloatingPanelPosition {
+  const maxX = Math.max(ORDER_PANEL_MARGIN, window.innerWidth - ORDER_PANEL_WIDTH - ORDER_PANEL_MARGIN);
+  const panelHeight = Math.min(ORDER_PANEL_MAX_HEIGHT, window.innerHeight - ORDER_PANEL_MARGIN * 2);
+  const maxY = Math.max(ORDER_PANEL_MARGIN, window.innerHeight - panelHeight - ORDER_PANEL_MARGIN);
+
+  return {
+    x: clamp(position.x, ORDER_PANEL_MARGIN, maxX),
+    y: clamp(position.y, ORDER_PANEL_MARGIN, maxY),
+  };
 }
 
 function mergeSymbols(current: SymbolData[], incoming: SymbolData[]): SymbolData[] {
@@ -1070,25 +1194,28 @@ function resolveDisplayDatetime(bar: Bar, walkState: IntrabarWalkState | null, p
 }
 
 function createInitialWalkState(bar: Bar): IntrabarWalkState {
+  const close = clampToTseTick(bar.open, bar.low, bar.high);
   return {
     time: bar.time,
-    close: bar.open,
-    high: bar.open,
-    low: bar.open,
+    close,
+    high: close,
+    low: close,
+    volume: 0,
     elapsedMs: 0,
     startedAtMs: Date.now(),
   };
 }
 
 function buildWalkingBar(bar: Bar, walkState: IntrabarWalkState): Bar {
-  const boundedClose = clamp(walkState.close, bar.low, bar.high);
-  const boundedHigh = clamp(Math.max(bar.open, walkState.high, boundedClose), bar.low, bar.high);
-  const boundedLow = clamp(Math.min(bar.open, walkState.low, boundedClose), bar.low, bar.high);
+  const boundedClose = clampToTseTick(walkState.close, bar.low, bar.high);
+  const boundedHigh = clampToTseTick(Math.max(bar.open, walkState.high, boundedClose), Math.max(bar.open, boundedClose), bar.high);
+  const boundedLow = clampToTseTick(Math.min(bar.open, walkState.low, boundedClose), bar.low, Math.min(bar.open, boundedClose));
   return {
     ...bar,
     high: boundedHigh,
     low: boundedLow,
     close: boundedClose,
+    volume: Math.min(bar.volume, Math.max(0, Math.round(walkState.volume))),
   };
 }
 
@@ -1098,11 +1225,13 @@ function nextWalkState(value: IntrabarWalkState | null, bar: Bar, timeframe: Tim
   const maxElapsedMs = Math.max(0, getTimeframeDurationMs(timeframe) - 1_000);
   const normalizedSpeed = Number.isFinite(speed) && speed > 0 ? speed : 1;
   const elapsedMs = Math.min(maxElapsedMs, Math.max(0, (Date.now() - current.startedAtMs) * normalizedSpeed));
+  const volume = getIntrabarDisplayVolume(bar.volume, elapsedMs, timeframe);
   return {
     time: bar.time,
     close,
     high: Math.max(current.high, close),
     low: Math.min(current.low, close),
+    volume,
     elapsedMs,
     startedAtMs: current.startedAtMs,
   };
@@ -1110,8 +1239,11 @@ function nextWalkState(value: IntrabarWalkState | null, bar: Bar, timeframe: Tim
 
 function nextWalkClose(value: number, bar: Bar): number {
   const range = Math.max(1, bar.high - bar.low);
-  const step = range * 0.12 * (Math.random() * 2 - 1);
-  return clamp(value + step, bar.low, bar.high);
+  const direction = Math.random() * 2 - 1;
+  const step = range * 0.12 * direction;
+  const current = clampToTseTick(value, bar.low, bar.high);
+  const next = clampToTseTick(current + step, bar.low, bar.high);
+  return next === current ? moveToAdjacentTseTick(current, direction, bar.low, bar.high) : next;
 }
 
 function clamp(value: number, min: number, max: number): number {

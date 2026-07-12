@@ -27,6 +27,10 @@ function summaryCard(page: Page) {
   return page.locator(".summary-card");
 }
 
+function summaryMetric(page: Page, label: string) {
+  return summaryCard(page).locator(".metric").filter({ hasText: label }).locator("strong");
+}
+
 function positionsSection(page: Page) {
   return page.locator(".table-section").filter({ has: page.getByRole("heading", { name: "建玉" }) });
 }
@@ -95,7 +99,7 @@ test.describe("Replay Trader major flows", () => {
     await loadSyntheticSample(page);
 
     await expect(page.getByText(`未指定のため、今日に最も近い ${SAMPLE_DATE} を表示中`)).toBeVisible();
-    await expect(chartHeader(page).getByText(`${SAMPLE_DATE} 09:00:00+0900`, { exact: true })).toBeVisible();
+    await expect(chartHeader(page).getByText(new RegExp(`${SAMPLE_DATE} 09:00:[0-5][0-9]\\+0900`))).toBeVisible();
     await expect(page.getByText("1 / 220")).toBeVisible();
     await expect(page.getByText("MA5")).toBeVisible();
     await expect(page.getByText("MA25")).toBeVisible();
@@ -168,13 +172,38 @@ test.describe("Replay Trader major flows", () => {
 
     await dialog.getByRole("button", { name: "IFDOCO" }).click();
     await dialog.getByLabel("新規区分").selectOption("marginOpen");
-    await dialog.locator("label").filter({ hasText: "利確価格" }).locator("input").fill("3010");
-    await dialog.locator("label").filter({ hasText: "損切価格" }).locator("input").fill("2990");
+    await dialog.locator("label").filter({ hasText: "利確価格" }).locator("input").fill("2810");
+    await dialog.locator("label").filter({ hasText: "損切価格" }).locator("input").fill("2790");
     await dialog.getByRole("button", { name: "買いIFDOCO" }).click();
 
     await expect(page.getByText("IFDOCO新規注文が約定し、OCO返済条件を登録しました。実注文ではありません。")).toBeVisible();
     await expect(dialog.getByText("IFDOCO待機")).toBeVisible();
     await expect(dialog.getByText("1 件")).toBeVisible();
+  });
+
+  test("注文パネルはボタン近くに開き、ドラッグで移動できる", async ({ page }) => {
+    await loadSyntheticSample(page);
+    const openButton = page.getByRole("button", { name: "注文パネルを開く" });
+    const buttonBox = await openButton.boundingBox();
+    const dialog = await openOrderModal(page);
+    const initialBox = await dialog.boundingBox();
+
+    expect(buttonBox).not.toBeNull();
+    expect(initialBox).not.toBeNull();
+    const buttonRight = (buttonBox?.x ?? 0) + (buttonBox?.width ?? 0);
+    const dialogRight = (initialBox?.x ?? 0) + (initialBox?.width ?? 0);
+    expect(Math.abs(dialogRight - buttonRight)).toBeLessThan(8);
+    expect(initialBox?.y ?? 0).toBeGreaterThanOrEqual(0);
+    expect(initialBox?.y ?? 0).toBeLessThanOrEqual(buttonBox?.y ?? 0);
+
+    await page.mouse.move((initialBox?.x ?? 0) + 90, (initialBox?.y ?? 0) + 22);
+    await page.mouse.down();
+    await page.mouse.move(420, 130, { steps: 10 });
+    await page.mouse.up();
+    const movedBox = await dialog.boundingBox();
+
+    expect(movedBox).not.toBeNull();
+    expect(movedBox?.x ?? 0).toBeLessThan((initialBox?.x ?? 0) - 80);
   });
 
   test("日付未指定ではサンプルデータの最近傍日を表示する", async ({ page }) => {
@@ -191,7 +220,7 @@ test.describe("Replay Trader major flows", () => {
     await page.getByLabel("リプレイ日").fill("2024-05-19");
 
     await expect(page.getByText(`指定日にデータがないため、最も近い ${SAMPLE_DATE} を表示中`)).toBeVisible();
-    await expect(chartHeader(page).getByText(`${SAMPLE_DATE} 09:00:00+0900`, { exact: true })).toBeVisible();
+    await expect(chartHeader(page).getByText(new RegExp(`${SAMPLE_DATE} 09:00:[0-5][0-9]\\+0900`))).toBeVisible();
     await expect(page.getByText("1 / 220")).toBeVisible();
   });
 
@@ -233,6 +262,19 @@ test.describe("Replay Trader major flows", () => {
     await expect(page.getByText("1 / 44")).toBeVisible();
   });
 
+  test("チャート上でSpaceキーを押すと再生と一時停止を切り替えられる", async ({ page }) => {
+    await loadSyntheticSample(page);
+
+    await page.locator(".chart-shell").hover({ position: { x: 240, y: 240 } });
+    await page.keyboard.press("Space");
+
+    await expect(page.getByRole("button", { name: "一時停止" })).toBeVisible();
+
+    await page.keyboard.press("Space");
+
+    await expect(page.getByRole("button", { name: "再生" })).toBeVisible();
+  });
+
   test("再生中はローソク足内の時刻秒を更新する", async ({ page }) => {
     await loadSyntheticSample(page);
 
@@ -263,6 +305,24 @@ test.describe("Replay Trader major flows", () => {
     const updatedOhlc = await page.locator(".ohlc-strip").innerText();
 
     expect(updatedOhlc).not.toBe(firstOhlc);
+  });
+
+  test("再生中はティックごとに口座サマリーの建玉損益を更新する", async ({ page }) => {
+    await loadSyntheticSample(page);
+    const dialog = await openOrderModal(page);
+    await dialog.getByRole("button", { name: "買い注文" }).click();
+    await dialog.getByRole("button", { name: "閉じる" }).click();
+    await expect(summaryMetric(page, "買い建玉損益")).toHaveText("0 円");
+
+    await page.evaluate(() => {
+      Math.random = () => 1;
+    });
+    await page.getByRole("button", { name: "60x" }).click();
+    await page.getByRole("button", { name: "再生" }).click();
+
+    await expect(summaryMetric(page, "買い建玉損益")).not.toHaveText("0 円", { timeout: 1_000 });
+    await expect(summaryMetric(page, "建玉損益合計")).not.toHaveText("0 円");
+    await expect(summaryMetric(page, "トータル損益")).not.toHaveText("0 円");
   });
 
   test("テーマは初期表示でダーク、操作でライトへ切り替わる", async ({ page }) => {

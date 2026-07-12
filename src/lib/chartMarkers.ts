@@ -1,8 +1,8 @@
 import type { SeriesMarker, Time, UTCTimestamp } from "lightweight-charts";
 import type { Execution, Timeframe } from "../types";
 
-const OPEN_BUY_COLOR = "#16a34a";
-const OPEN_SELL_COLOR = "#dc2626";
+const OPEN_BUY_COLOR = "#166534";
+const OPEN_SELL_COLOR = "#ec4899";
 const PROFIT_CLOSE_COLOR = "#22c55e";
 const LOSS_CLOSE_COLOR = "#ef4444";
 const FLAT_CLOSE_COLOR = "#94a3b8";

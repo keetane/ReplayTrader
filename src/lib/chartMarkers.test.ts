@@ -27,11 +27,11 @@ describe("buildExecutionMarkers", () => {
 
     expect(markers[0]).toMatchObject({
       shape: "arrowUp",
-      color: "#16a34a",
+      color: "#166534",
     });
     expect(markers[1]).toMatchObject({
       shape: "arrowDown",
-      color: "#dc2626",
+      color: "#ec4899",
     });
     expect(markers[0]).not.toHaveProperty("text");
     expect(markers[1]).not.toHaveProperty("text");
@@ -123,7 +123,7 @@ describe("buildExecutionMarkers", () => {
       "1m",
     );
 
-    expect(labels[0]).toMatchObject({ text: "買 100", color: "#16a34a", verticalPreference: "below" });
+    expect(labels[0]).toMatchObject({ text: "買 100", color: "#166534", verticalPreference: "below" });
     expect(labels[1]).toMatchObject({ text: "利確 +12,000円 100", color: "#22c55e", verticalPreference: "above" });
   });
 });
