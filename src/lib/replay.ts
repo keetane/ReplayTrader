@@ -1,4 +1,4 @@
-import type { Timeframe } from "../types";
+import type { TickMode, Timeframe } from "../types";
 
 const TIMEFRAME_DURATION_MS: Record<Timeframe, number> = {
   "1m": 60_000,
@@ -33,18 +33,31 @@ export function getReplayAdvanceIntervalMs(timeframe: Timeframe, speed: number):
   return getTimeframeDurationMs(timeframe) / normalizedSpeed;
 }
 
-export function getIntrabarWalkTickCount(volume: number, volumes: number[]): number {
+export function getIntrabarWalkTickCount(volume: number, volumes: number[], tickMode: TickMode = "desktop"): number {
+  if (tickMode === "mobile") {
+    if (!Number.isFinite(volume) || volume <= 0) return 1;
+    return Math.min(120, Math.max(1, Math.round(volume / 100)));
+  }
+
+  const minTicks = 60;
+  const maxTicks = 2_400;
   const finiteVolumes = volumes.filter((value) => Number.isFinite(value) && value > 0).sort((a, b) => a - b);
-  if (!Number.isFinite(volume) || volume <= 0 || finiteVolumes.length === 0) return 60;
+  if (!Number.isFinite(volume) || volume <= 0 || finiteVolumes.length === 0) return minTicks;
 
   const rank = finiteVolumes.filter((value) => value <= volume).length;
   const percentile = finiteVolumes.length <= 1 ? 1 : (rank - 1) / (finiteVolumes.length - 1);
-  return Math.round(60 + percentile * 2_340);
+  return Math.round(minTicks + percentile * (maxTicks - minTicks));
 }
 
-export function getIntrabarWalkIntervalMs(timeframe: Timeframe, speed: number, volume: number, volumes: number[]): number {
+export function getIntrabarWalkIntervalMs(
+  timeframe: Timeframe,
+  speed: number,
+  volume: number,
+  volumes: number[],
+  tickMode: TickMode = "desktop",
+): number {
   const advanceIntervalMs = getReplayAdvanceIntervalMs(timeframe, speed);
-  const tickCount = getIntrabarWalkTickCount(volume, volumes);
+  const tickCount = getIntrabarWalkTickCount(volume, volumes, tickMode);
   return Math.max(40, Math.round(advanceIntervalMs / tickCount));
 }
 

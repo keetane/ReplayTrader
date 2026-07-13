@@ -1,5 +1,11 @@
+import { roundToTseTick } from "./replay";
+
 export function formatPrice(value: number): string {
   return new Intl.NumberFormat("ja-JP", { maximumFractionDigits: 2 }).format(value);
+}
+
+export function formatTseTickPrice(value: number): string {
+  return formatPrice(roundToTseTick(value));
 }
 
 export function formatYen(value: number): string {

@@ -44,11 +44,24 @@ import {
   submitVirtualOrder,
   updateInitialCash,
 } from "./lib/trading";
-import type { Bar, PersistedSession, PositionProduct, Side, SymbolData, ThemeMode, Timeframe, TradingState, TradeType } from "./types";
+import type {
+  Bar,
+  IndicatorMode,
+  PersistedSession,
+  PositionProduct,
+  Side,
+  SymbolData,
+  ThemeMode,
+  TickMode,
+  Timeframe,
+  TradingState,
+  TradeType,
+} from "./types";
 import "./styles.css";
 
 const SPEEDS = [1, 5, 10, 30, 60];
 const MA_PERIODS: [number, number, number] = [5, 25, 60];
+const BOLLINGER_PERIOD_OPTIONS = [10, 20, 25, 50, 75];
 const LOT_SIZE = 100;
 const CHART_LOOKBACK_DAYS = 2;
 const EMPTY_POSITION_PNL_SUMMARY = { buy: 0, sell: 0, total: 0 };
@@ -72,6 +85,11 @@ interface DailyMarketStats {
   open: number;
   high: number;
   low: number;
+  change: number | null;
+  changePercent: number | null;
+}
+
+interface SymbolOpenChange {
   change: number | null;
   changePercent: number | null;
 }
@@ -102,11 +120,14 @@ function App() {
   const [symbols, setSymbols] = useState<SymbolData[]>([]);
   const [selectedSymbolId, setSelectedSymbolId] = useState<string>();
   const [requestedDate, setRequestedDate] = useState("");
+  const [tickMode, setTickMode] = useState<TickMode>("desktop");
   const [timeframe, setTimeframe] = useState<Timeframe>("1m");
+  const [indicatorMode, setIndicatorMode] = useState<IndicatorMode>("ma");
+  const [bollingerPeriod, setBollingerPeriod] = useState(25);
   const [themeMode, setThemeMode] = useState<ThemeMode>("dark");
   const [replayIndex, setReplayIndex] = useState(0);
   const [playing, setPlaying] = useState(false);
-  const [speed, setSpeed] = useState(5);
+  const [speed, setSpeed] = useState(1);
   const [trading, setTrading] = useState<TradingState>(INITIAL_TRADING_STATE);
   const [parseMessage, setParseMessage] = useState<string>("CSVを選択するか、架空サンプルを生成してください。");
   const [tradeType, setTradeType] = useState<TradeType>("marginOpen");
@@ -172,7 +193,7 @@ function App() {
   const totalPnl = trading.realizedPnl + unrealizedPnl;
   const maintenanceRatio = evaluateMaintenanceRatio(accountValue, marginExposure);
   const marginBuyingPower = evaluateMarginBuyingPower(trading.cash, marginExposure);
-  const chartViewportKey = `${selectedSymbolId ?? "none"}:${resolvedDate.activeDate ?? "none"}:${timeframe}`;
+  const chartViewportKey = `${selectedSymbolId ?? "none"}:${resolvedDate.activeDate ?? "none"}:${timeframe}:${indicatorMode}:${bollingerPeriod}`;
 
   const selectedSummary = useMemo(() => (selectedSymbol ? summarizeSymbol(selectedSymbol) : "-"), [selectedSymbol]);
 
@@ -190,6 +211,7 @@ function App() {
       speed,
       walkVolume,
       bars.map((bar) => bar.volume),
+      tickMode,
     );
     const walkTimer = window.setInterval(() => {
       setWalkState((value) => nextWalkState(value, currentBar, timeframe, speed));
@@ -208,7 +230,7 @@ function App() {
       window.clearInterval(walkTimer);
       window.clearInterval(advanceTimer);
     };
-  }, [bars, bars.length, currentBar, currentIndex, playing, speed, timeframe]);
+  }, [bars, bars.length, currentBar, currentIndex, playing, speed, tickMode, timeframe]);
 
   useEffect(() => {
     return () => {
@@ -326,7 +348,10 @@ function App() {
       selectedSymbolId,
       replayIndex: currentIndex,
       speed,
+      tickMode,
       timeframe,
+      indicatorMode,
+      bollingerPeriod,
       requestedDate,
       themeMode,
       trading,
@@ -347,7 +372,10 @@ function App() {
     setSelectedSymbolId(session.selectedSymbolId ?? session.symbols[0]?.id);
     setReplayIndex(session.replayIndex);
     setSpeed(session.speed);
+    setTickMode(session.tickMode ?? "desktop");
     setTimeframe(session.timeframe ?? "1m");
+    setIndicatorMode(session.indicatorMode ?? "ma");
+    setBollingerPeriod(session.bollingerPeriod ?? 25);
     setRequestedDate(session.requestedDate ?? "");
     setThemeMode(session.themeMode ?? "dark");
     setTrading(normalizeTradingState(session.trading));
@@ -576,31 +604,6 @@ function App() {
           </section>
 
           <section className="panel-section">
-            <h2>銘柄一覧</h2>
-            <div className="symbol-list">
-              {symbols.length === 0 ? <p className="empty-text">読み込み済みCSVはありません。</p> : null}
-              {symbols.map((symbol) => (
-                <button
-                  className={`symbol-row ${symbol.id === selectedSymbolId ? "selected" : ""}`}
-                  key={symbol.id}
-                  type="button"
-                  onClick={() => {
-                    setSelectedSymbolId(symbol.id);
-                    setReplayIndex(0);
-                    setPlaying(false);
-                  }}
-                >
-                  <span>
-                    <strong>{symbol.id}</strong>
-                    <small>{symbol.fileName}</small>
-                  </span>
-                  <b>{symbol.bars.length.toLocaleString("ja-JP")} 行</b>
-                </button>
-              ))}
-            </div>
-          </section>
-
-          <section className="panel-section">
             <h2>日付指定</h2>
             <label className="date-field">
               <span>
@@ -629,6 +632,42 @@ function App() {
                   ? "YYYY-MM-DD形式で入力してください。"
                   : "CSV読込後に日付を選択できます。"}
             </p>
+          </section>
+
+          <section className="panel-section">
+            <h2>銘柄一覧</h2>
+            <div className="symbol-list">
+              {symbols.length === 0 ? <p className="empty-text">読み込み済みCSVはありません。</p> : null}
+              {symbols.map((symbol) => {
+                const openChange = calculateSymbolOpenChange(symbol, requestedDate);
+                return (
+                  <button
+                    className={`symbol-row ${symbol.id === selectedSymbolId ? "selected" : ""}`}
+                    key={symbol.id}
+                    type="button"
+                    onClick={() => {
+                      setSelectedSymbolId(symbol.id);
+                      setReplayIndex(0);
+                      setPlaying(false);
+                    }}
+                  >
+                    <span>
+                      <strong>{symbol.id}</strong>
+                      <small>{symbol.fileName}</small>
+                    </span>
+                    <span className="symbol-row-meta">
+                      <small className={getOpenChangeClassName(openChange.change)}>
+                        前日比{" "}
+                        {openChange.change == null || openChange.changePercent == null
+                          ? "-"
+                          : `${formatSignedPrice(openChange.change)} (${formatSignedPercent(openChange.changePercent)})`}
+                      </small>
+                      <b>{symbol.bars.length.toLocaleString("ja-JP")} 行</b>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
           </section>
 
           <section className="panel-section data-card">
@@ -663,7 +702,7 @@ function App() {
             <div className="chart-tools">
               <div className="daily-strip">
                 <span>当日始 {dailyMarketStats ? formatPrice(dailyMarketStats.open) : "-"}</span>
-                <span>
+                <span className={getChangeClassName("daily-change", dailyMarketStats?.change ?? null)}>
                   前日比{" "}
                   {dailyMarketStats?.change == null || dailyMarketStats.changePercent == null
                     ? "-"
@@ -679,13 +718,41 @@ function App() {
                 <span>終 {displayCurrentBar ? formatPrice(displayCurrentBar.close) : "-"}</span>
                 <span>出来高 {displayCurrentBar ? formatVolume(displayCurrentBar.volume) : "-"}</span>
               </div>
-              <label className="timeframe-picker">
-                <span>時間足</span>
-                <select value={timeframe} onChange={(event) => setTimeframe(event.currentTarget.value as Timeframe)}>
-                  <option value="1m">1分</option>
-                  <option value="5m">5分</option>
-                </select>
-              </label>
+              <div className="chart-picker-row">
+                <label className="timeframe-picker">
+                  <span>Tick</span>
+                  <select value={tickMode} onChange={(event) => setTickMode(event.currentTarget.value as TickMode)}>
+                    <option value="desktop">PC</option>
+                    <option value="mobile">スマホ</option>
+                  </select>
+                </label>
+                <label className="timeframe-picker">
+                  <span>時間足</span>
+                  <select value={timeframe} onChange={(event) => setTimeframe(event.currentTarget.value as Timeframe)}>
+                    <option value="1m">1分</option>
+                    <option value="5m">5分</option>
+                  </select>
+                </label>
+                <label className="timeframe-picker">
+                  <span>指標</span>
+                  <select value={indicatorMode} onChange={(event) => setIndicatorMode(event.currentTarget.value as IndicatorMode)}>
+                    <option value="ma">MA</option>
+                    <option value="bb">BB</option>
+                  </select>
+                </label>
+                {indicatorMode === "bb" ? (
+                  <label className="timeframe-picker">
+                    <span>期間</span>
+                    <select value={bollingerPeriod} onChange={(event) => setBollingerPeriod(Number(event.currentTarget.value))}>
+                      {BOLLINGER_PERIOD_OPTIONS.map((period) => (
+                        <option key={period} value={period}>
+                          {period}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : null}
+              </div>
             </div>
           </div>
 
@@ -694,6 +761,8 @@ function App() {
             maSourceBars={visibleMaSourceBars}
             executions={trading.executions.filter((item) => item.symbol === selectedSymbolId)}
             maPeriods={MA_PERIODS}
+            indicatorMode={indicatorMode}
+            bollingerPeriod={bollingerPeriod}
             themeMode={themeMode}
             timeframe={timeframe}
             viewportKey={chartViewportKey}
@@ -1167,6 +1236,30 @@ function calculateDailyMarketStats(
     change,
     changePercent,
   };
+}
+
+function calculateSymbolOpenChange(symbol: SymbolData, requestedDate: string): SymbolOpenChange {
+  const activeDate = resolveRequestedDate(symbol.bars, requestedDate).activeDate;
+  const dayOpen = activeDate ? filterBarsByDate(symbol.bars, activeDate)[0]?.open : undefined;
+  const previousClose = findPreviousClose(symbol.bars, activeDate);
+  if (dayOpen == null || previousClose == null || previousClose === 0) {
+    return { change: null, changePercent: null };
+  }
+
+  const change = dayOpen - previousClose;
+  return {
+    change,
+    changePercent: (change / previousClose) * 100,
+  };
+}
+
+function getOpenChangeClassName(change: number | null): string {
+  return getChangeClassName("symbol-open-change", change);
+}
+
+function getChangeClassName(baseClassName: string, change: number | null): string {
+  if (change == null || change === 0) return baseClassName;
+  return `${baseClassName} ${change > 0 ? "positive" : "negative"}`;
 }
 
 function findPreviousClose(sourceBars: Bar[], activeDate: string | undefined): number | null {

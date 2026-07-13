@@ -34,7 +34,7 @@ describe("getReplayAdvanceIntervalMs", () => {
 });
 
 describe("getIntrabarWalkTickCount", () => {
-  it("increases tick count for higher volume candles", () => {
+  it("increases tick count for higher volume candles in desktop mode", () => {
     const volumes = [100, 200, 400, 800, 1_600];
 
     expect(getIntrabarWalkTickCount(100, volumes)).toBeLessThan(getIntrabarWalkTickCount(1_600, volumes));
@@ -42,13 +42,24 @@ describe("getIntrabarWalkTickCount", () => {
     expect(getIntrabarWalkTickCount(1_600, volumes)).toBe(2_400);
   });
 
+  it("uses share-count based ticks capped at 120 in mobile mode", () => {
+    const volumes = [100, 1_000, 12_000, 24_000];
+
+    expect(getIntrabarWalkTickCount(100, volumes, "mobile")).toBe(1);
+    expect(getIntrabarWalkTickCount(1_000, volumes, "mobile")).toBe(10);
+    expect(getIntrabarWalkTickCount(12_000, volumes, "mobile")).toBe(120);
+    expect(getIntrabarWalkTickCount(24_000, volumes, "mobile")).toBe(120);
+  });
+
   it("uses playback interval divided by volume-linked ticks", () => {
     const lowVolumeInterval = getIntrabarWalkIntervalMs("1m", 1, 100, [100, 200, 400, 800, 1_600]);
     const highVolumeInterval = getIntrabarWalkIntervalMs("1m", 1, 1_600, [100, 200, 400, 800, 1_600]);
+    const mobileHighVolumeInterval = getIntrabarWalkIntervalMs("1m", 1, 12_000, [100, 1_000, 12_000], "mobile");
 
     expect(highVolumeInterval).toBeLessThan(lowVolumeInterval);
     expect(lowVolumeInterval).toBe(1_000);
     expect(highVolumeInterval).toBe(40);
+    expect(mobileHighVolumeInterval).toBe(500);
   });
 });
 

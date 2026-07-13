@@ -9,19 +9,24 @@ import {
   type IChartApi,
   type ISeriesApi,
   type ISeriesMarkersPluginApi,
+  type MouseEventParams,
+  type SeriesMarker,
   type Time,
   type UTCTimestamp,
   type WhitespaceData,
 } from "lightweight-charts";
-import { calculateVisibleMovingAverage } from "../lib/bars";
-import { buildExecutionMarkerLabels, buildExecutionMarkers } from "../lib/chartMarkers";
-import type { Bar, Execution, ThemeMode, Timeframe } from "../types";
+import { calculateVisibleBollingerBands, calculateVisibleMovingAverage } from "../lib/bars";
+import { buildExecutionMarkerLabels, buildExecutionMarkers, type ExecutionMarkerLabel } from "../lib/chartMarkers";
+import { formatTseTickPrice } from "../lib/format";
+import type { Bar, Execution, IndicatorMode, ThemeMode, Timeframe } from "../types";
 
 interface ChartPanelProps {
   bars: Bar[];
   maSourceBars: Bar[];
   executions: Execution[];
   maPeriods: [number, number, number];
+  indicatorMode: IndicatorMode;
+  bollingerPeriod: number;
   themeMode: ThemeMode;
   timeframe: Timeframe;
   viewportKey: string;
@@ -29,13 +34,20 @@ interface ChartPanelProps {
   onTogglePlayback: () => void;
 }
 
-const MA_COLORS = ["#f59e0b", "#2563eb", "#7c3aed"] as const;
+const INDICATOR_COLORS = ["#ef4444", "#f97316", "#f59e0b", "#2563eb", "#22c55e", "#14b8a6", "#7c3aed"] as const;
+const DISPLAY_TIME_ORIGIN = Math.floor(Date.UTC(2000, 0, 3, 0, 0, 0) / 1000);
 const VOLUME_PANE_RATIO = 0.24;
 const VOLUME_PANE_MIN_HEIGHT = 92;
 const VOLUME_PANE_MAX_HEIGHT = 170;
 const EXECUTION_LABEL_EDGE_PADDING = 10;
 const EXECUTION_LABEL_HEIGHT = 26;
 const EXECUTION_LABEL_GAP = 7;
+const TSE_PRICE_FORMAT = {
+  type: "custom" as const,
+  minMove: 0.1,
+  formatter: formatTseTickPrice,
+  tickmarksFormatter: (prices: number[]) => prices.map(formatTseTickPrice),
+};
 
 interface PositionedExecutionLabel {
   id: string;
@@ -59,11 +71,25 @@ interface PositionedExecutionMarkerOutline {
   radius: number;
 }
 
+interface IndicatorLegendItem {
+  label: string;
+  color: string;
+  value?: number;
+}
+
+interface ChartTimeMapping {
+  displayBars: Bar[];
+  originalToDisplay: Map<number, UTCTimestamp>;
+  displayToOriginal: Map<number, Bar>;
+}
+
 export function ChartPanel({
   bars,
   maSourceBars,
   executions,
   maPeriods,
+  indicatorMode,
+  bollingerPeriod,
   themeMode,
   timeframe,
   viewportKey,
@@ -77,12 +103,30 @@ export function ChartPanel({
   const maRefs = useRef<ISeriesApi<"Line">[]>([]);
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const appliedViewportKeyRef = useRef<string>("");
+  const displayTimeLabelsRef = useRef<Map<number, string>>(new Map());
   const isPointerOverChartRef = useRef(false);
   const [executionLabels, setExecutionLabels] = useState<PositionedExecutionLabel[]>([]);
   const [executionMarkerOutlines, setExecutionMarkerOutlines] = useState<PositionedExecutionMarkerOutline[]>([]);
+  const [hoveredIndicatorTime, setHoveredIndicatorTime] = useState<Bar["time"] | null>(null);
 
+  const timeMapping = useMemo(() => buildChartTimeMapping(bars, timeframe), [bars, timeframe]);
   const executionTimes = useMemo(() => new Set(executions.map((execution) => execution.time)), [executions]);
+  const barTimes = useMemo(() => new Set(bars.map((bar) => bar.time)), [bars]);
+  const indicatorSeries = useMemo(
+    () => buildIndicatorSeries(indicatorMode, maPeriods, bollingerPeriod, maSourceBars, bars),
+    [bars, bollingerPeriod, indicatorMode, maPeriods, maSourceBars],
+  );
+  const indicatorLegendItems = useMemo(
+    () => buildIndicatorLegendItems(indicatorSeries, hoveredIndicatorTime ?? bars.at(-1)?.time ?? null),
+    [bars, hoveredIndicatorTime, indicatorSeries],
+  );
   const isDark = themeMode === "dark";
+
+  useEffect(() => {
+    displayTimeLabelsRef.current = new Map(
+      timeMapping.displayBars.map((bar) => [Number(bar.time), bar.datetime]),
+    );
+  }, [timeMapping]);
 
   function handleChartKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     if (event.key !== " " && event.code !== "Space") return;
@@ -102,6 +146,7 @@ export function ChartPanel({
 
   function handleChartPointerLeave() {
     isPointerOverChartRef.current = false;
+    setHoveredIndicatorTime(null);
   }
 
   useEffect(() => {
@@ -123,7 +168,7 @@ export function ChartPanel({
       },
       localization: {
         locale: "ja-JP",
-        timeFormatter: formatCrosshairTime,
+        timeFormatter: (time: unknown) => formatDisplayCrosshairTime(time, displayTimeLabelsRef.current),
       },
       grid: {
         vertLines: { color: isDark ? "#1e293b" : "#e2e8f0" },
@@ -137,14 +182,21 @@ export function ChartPanel({
         borderColor: isDark ? "#334155" : "#cbd5e1",
         timeVisible: true,
         secondsVisible: false,
-        tickMarkFormatter: formatAxisTime,
+        tickMarkFormatter: (time: unknown) => formatDisplayAxisTime(time, displayTimeLabelsRef.current),
       },
       crosshair: {
         mode: 1,
       },
+      handleScale: {
+        mouseWheel: true,
+        pinch: true,
+        axisPressedMouseMove: true,
+        axisDoubleClickReset: true,
+      },
     });
 
     const candleSeries = chart.addSeries(CandlestickSeries, {
+      priceFormat: TSE_PRICE_FORMAT,
       upColor: "#16a34a",
       downColor: "#dc2626",
       borderUpColor: "#16a34a",
@@ -164,13 +216,15 @@ export function ChartPanel({
       lastValueVisible: true,
       priceLineVisible: false,
     }, 1);
-    const maSeries = maPeriods.map((period, index) =>
+    const indicatorLabels = getIndicatorSeriesLabels(indicatorMode, maPeriods, bollingerPeriod);
+    const maSeries = indicatorLabels.map((label, index) =>
       chart.addSeries(LineSeries, {
-        color: MA_COLORS[index],
+        priceFormat: TSE_PRICE_FORMAT,
+        color: INDICATOR_COLORS[index],
         lineWidth: 2,
         priceLineVisible: false,
         lastValueVisible: false,
-        title: `MA${period}`,
+        title: "",
       }),
     );
 
@@ -195,7 +249,7 @@ export function ChartPanel({
       markersRef.current = null;
       maRefs.current = [];
     };
-  }, [isDark, maPeriods]);
+  }, [bollingerPeriod, indicatorMode, isDark, maPeriods]);
 
   useEffect(() => {
     const handleWindowKeyDown = (event: globalThis.KeyboardEvent) => {
@@ -217,10 +271,10 @@ export function ChartPanel({
     const shouldResetViewport = viewportKey !== appliedViewportKeyRef.current;
     const preservedTimeRange = shouldResetViewport ? null : timeScale?.getVisibleLogicalRange();
     const preservedPriceRange = shouldResetViewport ? null : priceScale?.getVisibleRange();
-    const trailingWhitespace = buildTrailingWhitespace(bars, timeframe);
+    const trailingWhitespace = buildTrailingWhitespace(timeMapping.displayBars, timeframe);
     candleRef.current?.setData(
       [
-        ...bars.map((bar) => ({
+        ...timeMapping.displayBars.map((bar) => ({
           time: bar.time,
           open: bar.open,
           high: bar.high,
@@ -232,7 +286,7 @@ export function ChartPanel({
     );
     volumeRef.current?.setData(
       [
-        ...bars.map((bar) => ({
+        ...timeMapping.displayBars.map((bar) => ({
           time: bar.time as UTCTimestamp,
           value: bar.volume,
           color: bar.close >= bar.open ? "rgba(22, 163, 74, 0.38)" : "rgba(220, 38, 38, 0.34)",
@@ -241,7 +295,7 @@ export function ChartPanel({
       ],
     );
     maRefs.current.forEach((series, index) => {
-      series.setData(calculateVisibleMovingAverage(maSourceBars, bars, maPeriods[index]));
+      series.setData(toDisplayIndicatorPoints(indicatorSeries[index]?.points ?? [], timeMapping.originalToDisplay));
     });
     if (bars.length > 0) {
       if (shouldResetViewport) {
@@ -263,11 +317,25 @@ export function ChartPanel({
       timeScale?.fitContent();
       appliedViewportKeyRef.current = viewportKey;
     }
-  }, [bars, maSourceBars, maPeriods, timeframe, viewportKey]);
+  }, [bars.length, indicatorSeries, timeframe, timeMapping, viewportKey]);
 
   useEffect(() => {
-    markersRef.current?.setMarkers(buildExecutionMarkers(executions, timeframe));
-  }, [executions, timeframe]);
+    const chart = chartRef.current;
+    if (!chart) return;
+
+    const handleCrosshairMove = (param: MouseEventParams<Time>) => {
+      const time = resolveChartTime(param.time);
+      const originalBar = time === null ? undefined : timeMapping.displayToOriginal.get(Number(time));
+      setHoveredIndicatorTime(originalBar && barTimes.has(originalBar.time) ? originalBar.time : null);
+    };
+
+    chart.subscribeCrosshairMove(handleCrosshairMove);
+    return () => chart.unsubscribeCrosshairMove(handleCrosshairMove);
+  }, [barTimes, timeMapping]);
+
+  useEffect(() => {
+    markersRef.current?.setMarkers(toDisplayMarkers(buildExecutionMarkers(executions, timeframe), timeMapping.originalToDisplay));
+  }, [executions, timeframe, timeMapping]);
 
   useEffect(() => {
     const chart = chartRef.current;
@@ -283,7 +351,7 @@ export function ChartPanel({
       const bounds = container.getBoundingClientRect();
       const pricePaneHeight = chart.panes()[0]?.getHeight() ?? bounds.height;
       const labels = arrangeExecutionLabels(
-        buildExecutionMarkerLabels(executions, timeframe)
+        toDisplayMarkerLabels(buildExecutionMarkerLabels(executions, timeframe), timeMapping.originalToDisplay)
         .map((label, index): PositionedExecutionLabel | null => {
           const markerX = chart.timeScale().timeToCoordinate(label.time);
           const markerY = candleSeries.priceToCoordinate(label.price);
@@ -317,7 +385,7 @@ export function ChartPanel({
         .filter((label): label is PositionedExecutionLabel => label != null),
         pricePaneHeight,
       );
-      const outlines = buildExecutionMarkers(executions, timeframe)
+      const outlines = toDisplayMarkers(buildExecutionMarkers(executions, timeframe), timeMapping.originalToDisplay)
         .map((marker): PositionedExecutionMarkerOutline | null => {
           const markerX = chart.timeScale().timeToCoordinate(marker.time);
           const markerY = "price" in marker && marker.price != null ? candleSeries.priceToCoordinate(marker.price) : null;
@@ -346,16 +414,24 @@ export function ChartPanel({
     timeScale.subscribeVisibleLogicalRangeChange(scheduleUpdate);
     resizeObserver.observe(container);
     container.addEventListener("pointerup", scheduleUpdate);
-    container.addEventListener("wheel", scheduleUpdate, { passive: true });
+    const handleWheel = (event: globalThis.WheelEvent) => {
+      if (event.ctrlKey) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        zoomPriceScaleByWheel(chart, candleSeries, container, bars, event);
+      }
+      scheduleUpdate();
+    };
+    container.addEventListener("wheel", handleWheel, { capture: true, passive: false });
     scheduleUpdate();
 
     return () => {
       timeScale.unsubscribeVisibleLogicalRangeChange(scheduleUpdate);
       resizeObserver.disconnect();
       container.removeEventListener("pointerup", scheduleUpdate);
-      container.removeEventListener("wheel", scheduleUpdate);
+      container.removeEventListener("wheel", handleWheel, { capture: true });
     };
-  }, [bars, executions, timeframe]);
+  }, [bars, executions, timeframe, timeMapping]);
 
   return (
     <div
@@ -406,9 +482,10 @@ export function ChartPanel({
       ))}
       {bars.length > 0 ? (
         <div className="ma-legend">
-          {maPeriods.map((period, index) => (
-            <span key={period} style={{ color: MA_COLORS[index] }}>
-              MA{period}
+          {indicatorLegendItems.map((item) => (
+            <span key={item.label} style={{ color: item.color }}>
+              <span>{item.label}</span>
+              <strong>{item.value == null ? "-" : formatTseTickPrice(item.value)}</strong>
             </span>
           ))}
         </div>
@@ -430,6 +507,163 @@ function isEditableEventTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   const tagName = target.tagName.toLowerCase();
   return tagName === "input" || tagName === "select" || tagName === "textarea" || target.isContentEditable;
+}
+
+function buildChartTimeMapping(bars: Bar[], timeframe: Timeframe): ChartTimeMapping {
+  const stepSeconds = timeframe === "5m" ? 300 : 60;
+  const originalToDisplay = new Map<number, UTCTimestamp>();
+  const displayToOriginal = new Map<number, Bar>();
+  const displayBars = bars.map((bar, index) => {
+    const displayTime = (DISPLAY_TIME_ORIGIN + index * stepSeconds) as UTCTimestamp;
+    const displayBar = { ...bar, time: displayTime };
+    originalToDisplay.set(Number(bar.time), displayTime);
+    displayToOriginal.set(Number(displayTime), bar);
+    return displayBar;
+  });
+
+  return { displayBars, originalToDisplay, displayToOriginal };
+}
+
+function toDisplayIndicatorPoints(
+  points: { time: Bar["time"]; value: number }[],
+  originalToDisplay: Map<number, UTCTimestamp>,
+): { time: Bar["time"]; value: number }[] {
+  return points
+    .map((point) => {
+      const displayTime = originalToDisplay.get(Number(point.time));
+      return displayTime == null ? null : { time: displayTime as Bar["time"], value: point.value };
+    })
+    .filter((point): point is { time: Bar["time"]; value: number } => point != null);
+}
+
+function toDisplayMarkers(markers: SeriesMarker<Time>[], originalToDisplay: Map<number, UTCTimestamp>): SeriesMarker<Time>[] {
+  return markers.reduce<SeriesMarker<Time>[]>((next, marker) => {
+    const displayTime = originalToDisplay.get(Number(marker.time));
+    if (displayTime != null) {
+      next.push({ ...marker, time: displayTime } as SeriesMarker<Time>);
+    }
+    return next;
+  }, []);
+}
+
+function toDisplayMarkerLabels(
+  labels: ExecutionMarkerLabel[],
+  originalToDisplay: Map<number, UTCTimestamp>,
+): ExecutionMarkerLabel[] {
+  return labels.reduce<ExecutionMarkerLabel[]>((next, label) => {
+    const displayTime = originalToDisplay.get(Number(label.time));
+    if (displayTime != null) {
+      next.push({ ...label, time: displayTime });
+    }
+    return next;
+  }, []);
+}
+
+function buildIndicatorSeries(
+  mode: IndicatorMode,
+  maPeriods: [number, number, number],
+  bollingerPeriod: number,
+  sourceBars: Bar[],
+  displayedBars: Bar[],
+): Array<{ label: string; points: { time: Bar["time"]; value: number }[] }> {
+  if (mode === "bb") {
+    const period = normalizeBollingerPeriod(bollingerPeriod);
+    const oneSigmaBands = calculateVisibleBollingerBands(sourceBars, displayedBars, period, 1);
+    const twoSigmaBands = calculateVisibleBollingerBands(sourceBars, displayedBars, period, 2);
+    const threeSigmaBands = calculateVisibleBollingerBands(sourceBars, displayedBars, period, 3);
+    return [
+      { label: `BB${period} +3σ`, points: threeSigmaBands.map((point) => ({ time: point.time, value: point.upper })) },
+      { label: `BB${period} +2σ`, points: twoSigmaBands.map((point) => ({ time: point.time, value: point.upper })) },
+      { label: `BB${period} +1σ`, points: oneSigmaBands.map((point) => ({ time: point.time, value: point.upper })) },
+      { label: `BB${period}`, points: oneSigmaBands.map((point) => ({ time: point.time, value: point.middle })) },
+      { label: `BB${period} -1σ`, points: oneSigmaBands.map((point) => ({ time: point.time, value: point.lower })) },
+      { label: `BB${period} -2σ`, points: twoSigmaBands.map((point) => ({ time: point.time, value: point.lower })) },
+      { label: `BB${period} -3σ`, points: threeSigmaBands.map((point) => ({ time: point.time, value: point.lower })) },
+    ];
+  }
+
+  return maPeriods.map((period) => ({
+    label: `MA${period}`,
+    points: calculateVisibleMovingAverage(sourceBars, displayedBars, period),
+  }));
+}
+
+function buildIndicatorLegendItems(
+  series: Array<{ label: string; points: { time: Bar["time"]; value: number }[] }>,
+  targetTime: Bar["time"] | null,
+): IndicatorLegendItem[] {
+  return series.map((item, index) => ({
+    label: item.label,
+    color: INDICATOR_COLORS[index],
+    value: targetTime === null ? undefined : item.points.find((point) => point.time === targetTime)?.value,
+  }));
+}
+
+function getIndicatorSeriesLabels(mode: IndicatorMode, maPeriods: [number, number, number], bollingerPeriod: number): string[] {
+  if (mode === "bb") {
+    const period = normalizeBollingerPeriod(bollingerPeriod);
+    return [
+      `BB${period} +3σ`,
+      `BB${period} +2σ`,
+      `BB${period} +1σ`,
+      `BB${period}`,
+      `BB${period} -1σ`,
+      `BB${period} -2σ`,
+      `BB${period} -3σ`,
+    ];
+  }
+  return [`MA${maPeriods[0]}`, `MA${maPeriods[1]}`, `MA${maPeriods[2]}`];
+}
+
+function normalizeBollingerPeriod(period: number): number {
+  return Number.isFinite(period) && period > 0 ? Math.round(period) : 25;
+}
+
+function zoomPriceScaleByWheel(
+  chart: IChartApi,
+  series: ISeriesApi<"Candlestick">,
+  container: HTMLDivElement,
+  bars: Bar[],
+  event: globalThis.WheelEvent,
+) {
+  const pricePaneHeight = chart.panes()[0]?.getHeight() ?? container.getBoundingClientRect().height;
+  const localY = event.clientY - container.getBoundingClientRect().top;
+  if (localY < 0 || localY > pricePaneHeight) return;
+
+  const priceScale = series.priceScale();
+  const currentRange = priceScale.getVisibleRange() ?? getFallbackPriceRange(bars);
+  if (!currentRange) return;
+
+  const span = currentRange.to - currentRange.from;
+  if (!Number.isFinite(span) || span <= 0) return;
+
+  const pointerPrice = Number(series.coordinateToPrice(localY));
+  const anchor = Number.isFinite(pointerPrice) ? pointerPrice : (currentRange.from + currentRange.to) / 2;
+  const clampedDelta = Math.max(-240, Math.min(240, event.deltaY));
+  const factor = Math.exp(clampedDelta * 0.0018);
+  const minSpan = Math.max(0.1, span * 0.02);
+  const nextSpan = Math.max(minSpan, span * factor);
+  const anchorRatio = span === 0 ? 0.5 : (anchor - currentRange.from) / span;
+  const normalizedAnchorRatio = Math.min(0.95, Math.max(0.05, anchorRatio));
+
+  priceScale.setAutoScale(false);
+  priceScale.setVisibleRange({
+    from: anchor - nextSpan * normalizedAnchorRatio,
+    to: anchor + nextSpan * (1 - normalizedAnchorRatio),
+  });
+}
+
+function getFallbackPriceRange(bars: Bar[]): { from: number; to: number } | null {
+  if (bars.length === 0) return null;
+  const low = Math.min(...bars.map((bar) => bar.low));
+  const high = Math.max(...bars.map((bar) => bar.high));
+  if (!Number.isFinite(low) || !Number.isFinite(high)) return null;
+  const padding = Math.max(0.1, (high - low) * 0.08);
+  return { from: low - padding, to: high + padding };
+}
+
+function resolveChartTime(time: Time | undefined): Bar["time"] | null {
+  return typeof time === "number" && Number.isFinite(time) ? (time as Bar["time"]) : null;
 }
 
 function applyChartPaneHeights(chart: IChartApi, container: HTMLDivElement | null) {
@@ -518,18 +752,22 @@ function ExecutionMarkerOutline({ outline }: { outline: PositionedExecutionMarke
   return <polygon className="execution-marker-outline" points={points} />;
 }
 
-function formatAxisTime(time: unknown): string {
+function formatDisplayAxisTime(time: unknown, labels: Map<number, string>): string {
   if (typeof time !== "number") return String(time);
+  const datetime = labels.get(time);
+  if (!datetime) return "";
   return new Intl.DateTimeFormat("ja-JP", {
     timeZone: "Asia/Tokyo",
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
-  }).format(new Date(time * 1000));
+  }).format(parseJstDate(datetime));
 }
 
-function formatCrosshairTime(time: unknown): string {
+function formatDisplayCrosshairTime(time: unknown, labels: Map<number, string>): string {
   if (typeof time !== "number") return String(time);
+  const datetime = labels.get(time);
+  if (!datetime) return "";
   return new Intl.DateTimeFormat("ja-JP", {
     timeZone: "Asia/Tokyo",
     month: "2-digit",
@@ -537,7 +775,11 @@ function formatCrosshairTime(time: unknown): string {
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
-  }).format(new Date(time * 1000));
+  }).format(parseJstDate(datetime));
+}
+
+function parseJstDate(datetime: string): Date {
+  return new Date(datetime.replace(" ", "T").replace(/([+-]\d{2})(\d{2})$/, "$1:$2"));
 }
 
 function buildTrailingWhitespace(bars: Bar[], timeframe: Timeframe): WhitespaceData[] {
