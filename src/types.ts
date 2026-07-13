@@ -5,6 +5,8 @@ export type TradeType = "cash" | "marginOpen" | "marginClose";
 export type OrderType = "market" | "limit";
 export type Timeframe = "1m" | "5m";
 export type ThemeMode = "light" | "dark";
+export type IndicatorMode = "ma" | "bb";
+export type TickMode = "desktop" | "mobile";
 export type PositionProduct = "cash" | "margin";
 
 export interface Bar {
@@ -81,7 +83,10 @@ export interface PersistedSession {
   selectedSymbolId?: string;
   replayIndex: number;
   speed: number;
+  tickMode?: TickMode;
   timeframe?: Timeframe;
+  indicatorMode?: IndicatorMode;
+  bollingerPeriod?: number;
   requestedDate?: string;
   themeMode?: ThemeMode;
   trading: TradingState;

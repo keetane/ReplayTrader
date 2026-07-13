@@ -93,6 +93,9 @@ test.describe("Replay Trader major flows", () => {
     await expect(page.getByText("前日比 +11 (+12.2%)")).toBeVisible();
     await expect(page.getByText("当日高 103")).toBeVisible();
     await expect(page.getByText("当日安 99")).toBeVisible();
+    const symbolRow = page.getByRole("button", { name: /DND_TEST/ });
+    await expect(symbolRow.getByText("前日比 +10 (+11.1%)")).toBeVisible();
+    await expect(symbolRow.getByText("3 行")).toBeVisible();
   });
 
   test("架空サンプル生成で銘柄、チャート、口座サマリーが有効になる", async ({ page }) => {
@@ -105,7 +108,7 @@ test.describe("Replay Trader major flows", () => {
     await expect(page.getByText("MA25")).toBeVisible();
     await expect(page.getByText("MA60")).toBeVisible();
     await expect(page.getByText("当日始")).toBeVisible();
-    await expect(page.getByText("前日比")).toBeVisible();
+    await expect(chartHeader(page).getByText("前日比")).toBeVisible();
     await expect(page.getByText("当日高")).toBeVisible();
     await expect(page.getByText("当日安")).toBeVisible();
     await expect(page.getByRole("button", { name: "再生" })).toBeEnabled();
@@ -227,6 +230,13 @@ test.describe("Replay Trader major flows", () => {
   test("1分足と5分足を切り替えられる", async ({ page }) => {
     await loadSyntheticSample(page);
 
+    const tickMode = page.getByLabel("Tick");
+    await expect(tickMode).toHaveValue("desktop");
+    await tickMode.selectOption("mobile");
+    await expect(tickMode).toHaveValue("mobile");
+    await tickMode.selectOption("desktop");
+    await expect(tickMode).toHaveValue("desktop");
+
     const timeframe = page.getByLabel("時間足");
     await expect(timeframe).toHaveValue("1m");
     await expect(dataCard(page).getByText("1分足", { exact: true })).toBeVisible();
@@ -243,6 +253,39 @@ test.describe("Replay Trader major flows", () => {
     await expect(timeframe).toHaveValue("1m");
     await expect(dataCard(page).getByText("1分足", { exact: true })).toBeVisible();
     await expect(page.getByText("1 / 220")).toBeVisible();
+  });
+
+  test("インジケーターを移動平均とボリンジャーバンドで切り替えられる", async ({ page }) => {
+    await loadSyntheticSample(page);
+    const indicator = page.getByLabel("指標");
+
+    await expect(indicator).toHaveValue("ma");
+    await expect(page.getByText("MA5")).toBeVisible();
+    await expect(page.getByText("MA25")).toBeVisible();
+    await expect(page.getByText("MA60")).toBeVisible();
+
+    await indicator.selectOption("bb");
+
+    await expect(indicator).toHaveValue("bb");
+    await expect(page.getByLabel("期間")).toHaveValue("25");
+    await expect(page.getByText("BB25 +3σ")).toBeVisible();
+    await expect(page.getByText("BB25 +2σ")).toBeVisible();
+    await expect(page.getByText("BB25 +1σ")).toBeVisible();
+    await expect(page.getByText("BB25", { exact: true })).toBeVisible();
+    await expect(page.getByText("BB25 -1σ")).toBeVisible();
+    await expect(page.getByText("BB25 -2σ")).toBeVisible();
+    await expect(page.getByText("BB25 -3σ")).toBeVisible();
+
+    await page.getByLabel("期間").selectOption("20");
+
+    await expect(page.getByText("BB20 +3σ")).toBeVisible();
+    await expect(page.getByText("BB20 -3σ")).toBeVisible();
+
+    await indicator.selectOption("ma");
+
+    await expect(page.getByText("MA5")).toBeVisible();
+    await expect(page.getByText("MA25")).toBeVisible();
+    await expect(page.getByText("MA60")).toBeVisible();
   });
 
   test("再生速度は時間足の実時間を基準に進む", async ({ page }) => {
@@ -282,7 +325,7 @@ test.describe("Replay Trader major flows", () => {
     await page.getByRole("button", { name: "再生" }).click();
     await expect(page.getByText("1 / 220")).toBeVisible();
 
-    await expect(chartHeader(page).getByText(`${SAMPLE_DATE} 09:00:00+0900`, { exact: true })).toBeVisible();
+    await expect(chartHeader(page).getByText(new RegExp(`${SAMPLE_DATE} 09:00:[0-5][0-9]\\+0900`))).toBeVisible();
     await page.waitForTimeout(300);
 
     await expect(page.getByText("1 / 220")).toBeVisible();

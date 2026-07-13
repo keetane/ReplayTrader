@@ -42,10 +42,13 @@ export function filterBarsByDate(bars: Bar[], date?: string): Bar[] {
 
 export function filterBarsFromDateLookback(bars: Bar[], date: string | undefined, lookbackDays: number): Bar[] {
   if (!date) return [];
-  const targetStart = Date.parse(`${date}T00:00:00+09:00`);
-  if (!Number.isFinite(targetStart)) return [];
-  const startTime = Math.floor((targetStart - Math.max(0, lookbackDays) * 24 * 60 * 60 * 1000) / 1000);
-  return bars.filter((bar) => bar.time >= startTime);
+  const dates = getTradingDates(bars);
+  const activeDateIndex = dates.indexOf(date);
+  if (activeDateIndex === -1) return [];
+
+  const startDateIndex = Math.max(0, activeDateIndex - Math.max(0, Math.floor(lookbackDays)));
+  const visibleDates = new Set(dates.slice(startDateIndex, activeDateIndex + 1));
+  return bars.filter((bar) => visibleDates.has(bar.datetime.slice(0, 10)));
 }
 
 export function prepareBarsForTimeframe(bars: Bar[], timeframe: Timeframe): Bar[] {
@@ -105,6 +108,57 @@ export function calculateVisibleMovingAverage(
   if (displayedBars.length === 0) return [];
   const displayedTimes = new Set(displayedBars.map((bar) => bar.time));
   return calculateMovingAverage(sourceBars, period).filter((point) => displayedTimes.has(point.time));
+}
+
+export interface BollingerBandPoint {
+  time: Bar["time"];
+  upper: number;
+  middle: number;
+  lower: number;
+}
+
+export function calculateBollingerBands(bars: Bar[], period: number, multiplier: number): BollingerBandPoint[] {
+  if (period <= 0 || multiplier <= 0 || bars.length < period) return [];
+  const values: BollingerBandPoint[] = [];
+  let sum = 0;
+  let squaredSum = 0;
+
+  for (let index = 0; index < bars.length; index += 1) {
+    const close = bars[index].close;
+    sum += close;
+    squaredSum += close * close;
+
+    if (index >= period) {
+      const dropped = bars[index - period].close;
+      sum -= dropped;
+      squaredSum -= dropped * dropped;
+    }
+
+    if (index >= period - 1) {
+      const middle = sum / period;
+      const variance = Math.max(0, squaredSum / period - middle * middle);
+      const bandWidth = Math.sqrt(variance) * multiplier;
+      values.push({
+        time: bars[index].time,
+        upper: middle + bandWidth,
+        middle,
+        lower: middle - bandWidth,
+      });
+    }
+  }
+
+  return values;
+}
+
+export function calculateVisibleBollingerBands(
+  sourceBars: Bar[],
+  displayedBars: Bar[],
+  period: number,
+  multiplier: number,
+): BollingerBandPoint[] {
+  if (displayedBars.length === 0) return [];
+  const displayedTimes = new Set(displayedBars.map((bar) => bar.time));
+  return calculateBollingerBands(sourceBars, period, multiplier).filter((point) => displayedTimes.has(point.time));
 }
 
 function createAggregateBar(bar: Bar, bucket: number): Bar {
