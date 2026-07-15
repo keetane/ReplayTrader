@@ -466,12 +466,19 @@ input:disabled {
   border-radius: 6px;
   background: rgba(255, 255, 255, 0.92);
   box-shadow: 0 6px 18px rgba(15, 23, 42, 0.16);
+  cursor: grab;
   font-size: 12px;
   font-weight: 800;
   line-height: 1.2;
-  pointer-events: none;
+  pointer-events: auto;
   text-overflow: ellipsis;
+  touch-action: none;
+  user-select: none;
   white-space: nowrap;
+}
+
+.execution-label:active {
+  cursor: grabbing;
 }
 
 .chart-empty {
@@ -792,6 +799,34 @@ input:not([type="range"]) {
   gap: 4px;
 }
 
+.price-field {
+  display: grid;
+  gap: 4px;
+}
+
+.price-input-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 34px 34px;
+  gap: 6px;
+  align-items: center;
+}
+
+.price-input-row button {
+  min-height: 34px;
+  padding: 0 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #0f172a;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.price-input-row button[aria-label] {
+  padding: 0;
+  font-size: 16px;
+}
+
 .buy-button {
   min-height: 42px;
   border-color: #fecaca;
@@ -981,6 +1016,7 @@ td.signed {
 .app-shell[data-theme="dark"] input:not([type="range"]),
 .app-shell[data-theme="dark"] .primary-button:disabled,
 .app-shell[data-theme="dark"] .icon-button,
+.app-shell[data-theme="dark"] .price-input-row button,
 .app-shell[data-theme="dark"] .speed-group,
 .app-shell[data-theme="dark"] .speed-group button,
 .app-shell[data-theme="dark"] .segmented button {

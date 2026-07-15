@@ -223,6 +223,26 @@ describe("submitVirtualOrder", () => {
     expect(marginOpened.positions.map((position) => position.entryPrice)).toEqual([105, 108]);
   });
 
+  it("rejects new margin orders above margin buying power", () => {
+    const smallAccount = updateInitialCash(INITIAL_TRADING_STATE, 500_000);
+    const expensiveBar = { ...bar, open: 10_000, high: 10_200, low: 9_800, close: 10_000 };
+    const rejected = submitVirtualOrder(smallAccount, {
+      symbol: "9984",
+      side: "buy",
+      tradeType: "marginOpen",
+      orderType: "market",
+      quantity: 200,
+      bar: expensiveBar,
+      replayIndex: 0,
+    });
+
+    expect(rejected.orders[0]).toMatchObject({
+      status: "rejected",
+      message: "信用建余力を超える新規注文です。",
+    });
+    expect(rejected.positions).toHaveLength(0);
+  });
+
   it("allows partial cash sells and returns proceeds to cash", () => {
     const opened = submitVirtualOrder(INITIAL_TRADING_STATE, {
       symbol: "7203",

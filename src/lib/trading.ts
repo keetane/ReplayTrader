@@ -79,6 +79,15 @@ export function submitVirtualOrder(state: TradingState, input: SubmitOrderInput)
     return appendRejected(normalizedState, order, "現金残高を超える現物買い注文です。");
   }
 
+  if (input.tradeType === "marginOpen") {
+    const currentExposure = evaluateMarginExposure(normalizedState.positions, fillPrice);
+    const buyingPower = evaluateMarginBuyingPower(normalizedState.cash, currentExposure);
+    const orderExposure = fillPrice * quantity;
+    if (orderExposure > buyingPower) {
+      return appendRejected(normalizedState, order, "信用建余力を超える新規注文です。");
+    }
+  }
+
   const execution: Execution = {
     id: crypto.randomUUID(),
     orderId,
