@@ -71,6 +71,19 @@ interface PositionedExecutionMarkerOutline {
   radius: number;
 }
 
+interface ExecutionLabelOffset {
+  x: number;
+  y: number;
+}
+
+interface ExecutionLabelDragState {
+  id: string;
+  pointerId: number;
+  startClientX: number;
+  startClientY: number;
+  startOffset: ExecutionLabelOffset;
+}
+
 interface IndicatorLegendItem {
   label: string;
   color: string;
@@ -105,8 +118,10 @@ export function ChartPanel({
   const appliedViewportKeyRef = useRef<string>("");
   const displayTimeLabelsRef = useRef<Map<number, string>>(new Map());
   const isPointerOverChartRef = useRef(false);
+  const executionLabelDragRef = useRef<ExecutionLabelDragState | null>(null);
   const [executionLabels, setExecutionLabels] = useState<PositionedExecutionLabel[]>([]);
   const [executionMarkerOutlines, setExecutionMarkerOutlines] = useState<PositionedExecutionMarkerOutline[]>([]);
+  const [executionLabelOffsets, setExecutionLabelOffsets] = useState<Record<string, ExecutionLabelOffset>>({});
   const [hoveredIndicatorTime, setHoveredIndicatorTime] = useState<Bar["time"] | null>(null);
 
   const timeMapping = useMemo(() => buildChartTimeMapping(bars, timeframe), [bars, timeframe]);
@@ -147,6 +162,46 @@ export function ChartPanel({
   function handleChartPointerLeave() {
     isPointerOverChartRef.current = false;
     setHoveredIndicatorTime(null);
+  }
+
+  function startExecutionLabelDrag(event: PointerEvent<HTMLSpanElement>, label: PositionedExecutionLabel) {
+    event.preventDefault();
+    event.stopPropagation();
+    const startOffset = executionLabelOffsets[label.id] ?? { x: 0, y: 0 };
+    executionLabelDragRef.current = {
+      id: label.id,
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startOffset,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function moveExecutionLabelDrag(event: PointerEvent<HTMLSpanElement>) {
+    const dragState = executionLabelDragRef.current;
+    if (!dragState || dragState.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const nextOffset = {
+      x: dragState.startOffset.x + event.clientX - dragState.startClientX,
+      y: dragState.startOffset.y + event.clientY - dragState.startClientY,
+    };
+    setExecutionLabelOffsets((current) => ({
+      ...current,
+      [dragState.id]: nextOffset,
+    }));
+  }
+
+  function endExecutionLabelDrag(event: PointerEvent<HTMLSpanElement>) {
+    const dragState = executionLabelDragRef.current;
+    if (!dragState || dragState.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    executionLabelDragRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
   }
 
   useEffect(() => {
@@ -338,6 +393,14 @@ export function ChartPanel({
   }, [executions, timeframe, timeMapping]);
 
   useEffect(() => {
+    const visibleIds = new Set(buildExecutionMarkerLabels(executions, timeframe).map((label) => label.id));
+    setExecutionLabelOffsets((current) => {
+      const next = Object.fromEntries(Object.entries(current).filter(([id]) => visibleIds.has(id)));
+      return Object.keys(next).length === Object.keys(current).length ? current : next;
+    });
+  }, [executions, timeframe]);
+
+  useEffect(() => {
     const chart = chartRef.current;
     const candleSeries = candleRef.current;
     const container = containerRef.current;
@@ -350,7 +413,8 @@ export function ChartPanel({
     const updateOverlays = () => {
       const bounds = container.getBoundingClientRect();
       const pricePaneHeight = chart.panes()[0]?.getHeight() ?? bounds.height;
-      const labels = arrangeExecutionLabels(
+      const labels = applyExecutionLabelOffsets(
+        arrangeExecutionLabels(
         toDisplayMarkerLabels(buildExecutionMarkerLabels(executions, timeframe), timeMapping.originalToDisplay)
         .map((label, index): PositionedExecutionLabel | null => {
           const markerX = chart.timeScale().timeToCoordinate(label.time);
@@ -383,6 +447,10 @@ export function ChartPanel({
           };
         })
         .filter((label): label is PositionedExecutionLabel => label != null),
+        pricePaneHeight,
+        ),
+        executionLabelOffsets,
+        bounds.width,
         pricePaneHeight,
       );
       const outlines = toDisplayMarkers(buildExecutionMarkers(executions, timeframe), timeMapping.originalToDisplay)
@@ -431,7 +499,7 @@ export function ChartPanel({
       container.removeEventListener("pointerup", scheduleUpdate);
       container.removeEventListener("wheel", handleWheel, { capture: true });
     };
-  }, [bars, executions, timeframe, timeMapping]);
+  }, [bars, executionLabelOffsets, executions, timeframe, timeMapping]);
 
   return (
     <div
@@ -476,6 +544,10 @@ export function ChartPanel({
             top: label.labelY,
             ["--execution-label-color" as string]: label.color,
           }}
+          onPointerDown={(event) => startExecutionLabelDrag(event, label)}
+          onPointerMove={moveExecutionLabelDrag}
+          onPointerUp={endExecutionLabelDrag}
+          onPointerCancel={endExecutionLabelDrag}
         >
           {label.text}
         </span>
@@ -725,8 +797,40 @@ function arrangeExecutionLabels(labels: PositionedExecutionLabel[], boundsHeight
   return placed.sort((first, second) => Number(first.id > second.id) - Number(first.id < second.id));
 }
 
+function applyExecutionLabelOffsets(
+  labels: PositionedExecutionLabel[],
+  offsets: Record<string, ExecutionLabelOffset>,
+  boundsWidth: number,
+  boundsHeight: number,
+): PositionedExecutionLabel[] {
+  return labels.map((label) => {
+    const offset = offsets[label.id] ?? { x: 0, y: 0 };
+    const labelX = clamp(
+      label.labelX + offset.x,
+      EXECUTION_LABEL_EDGE_PADDING,
+      boundsWidth - label.labelWidth - EXECUTION_LABEL_EDGE_PADDING,
+    );
+    const labelY = clamp(
+      label.labelY + offset.y,
+      EXECUTION_LABEL_EDGE_PADDING,
+      boundsHeight - label.labelHeight - EXECUTION_LABEL_EDGE_PADDING,
+    );
+    return {
+      ...label,
+      labelX,
+      labelY,
+      anchorX: clamp(label.markerX, labelX, labelX + label.labelWidth),
+      anchorY: clamp(label.markerY, labelY, labelY + label.labelHeight),
+    };
+  });
+}
+
 function labelsOverlapHorizontally(first: PositionedExecutionLabel, second: PositionedExecutionLabel): boolean {
   return first.labelX < second.labelX + second.labelWidth && second.labelX < first.labelX + first.labelWidth;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }
 
 function ExecutionMarkerOutline({ outline }: { outline: PositionedExecutionMarkerOutline }) {

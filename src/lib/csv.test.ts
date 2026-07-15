@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CsvParseError, parseCsvText } from "./csv";
+import { buildSyntheticCsv, CsvParseError, parseCsvText } from "./csv";
 
 describe("parseCsvText", () => {
   it("parses JST offset datetimes, sorts rows, and keeps the last duplicate row", () => {
@@ -38,4 +38,27 @@ describe("parseCsvText", () => {
       parseCsvText("Datetime,Close,High,Low,Open,Volume\n2026-02-30 09:05:00+0900,100,105,99,100,1"),
     ).toThrow("実在する日時");
   });
+
+  it("builds a volatile synthetic semiconductor-style sample", () => {
+    const result = parseCsvText(buildSyntheticCsv(), "DEMO_半導体風_1m.csv");
+    const bars = result.symbol.bars;
+    const highs = bars.map((bar) => bar.high);
+    const lows = bars.map((bar) => bar.low);
+    const firstThirtyAverageVolume = average(bars.slice(0, 30).map((bar) => bar.volume));
+    const middayAverageVolume = average(bars.slice(90, 140).map((bar) => bar.volume));
+
+    expect(result.symbol.id).toBe("DEMO_半導体風_1m");
+    expect(bars).toHaveLength(300);
+    expect(bars[0].datetime).toBe("2024-05-17 09:00:00+0900");
+    expect(bars[149].datetime).toBe("2024-05-17 11:29:00+0900");
+    expect(bars[150].datetime).toBe("2024-05-17 12:30:00+0900");
+    expect(bars.at(-1)?.datetime).toBe("2024-05-17 14:59:00+0900");
+    expect(Math.max(...highs) - Math.min(...lows)).toBeGreaterThan(500);
+    expect(firstThirtyAverageVolume).toBeGreaterThan(middayAverageVolume);
+    expect(Math.max(...bars.map((bar) => bar.volume))).toBeGreaterThan(1_000_000);
+  });
 });
+
+function average(values: number[]): number {
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}

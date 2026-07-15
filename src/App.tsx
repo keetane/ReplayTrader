@@ -28,6 +28,7 @@ import {
   getReplayAdvanceIntervalMs,
   getTimeframeDurationMs,
   moveToAdjacentTseTick,
+  roundToTseTick,
 } from "./lib/replay";
 import { clearSession, loadSession, saveSession } from "./lib/storage";
 import {
@@ -62,6 +63,7 @@ import "./styles.css";
 const SPEEDS = [1, 5, 10, 30, 60];
 const MA_PERIODS: [number, number, number] = [5, 25, 60];
 const BOLLINGER_PERIOD_OPTIONS = [10, 20, 25, 50, 75];
+const INITIAL_CASH_OPTIONS = [500_000, 1_000_000, 3_000_000, 5_000_000, 10_000_000];
 const LOT_SIZE = 100;
 const CHART_LOOKBACK_DAYS = 2;
 const EMPTY_POSITION_PNL_SUMMARY = { buy: 0, sell: 0, total: 0 };
@@ -120,7 +122,7 @@ function App() {
   const [symbols, setSymbols] = useState<SymbolData[]>([]);
   const [selectedSymbolId, setSelectedSymbolId] = useState<string>();
   const [requestedDate, setRequestedDate] = useState("");
-  const [tickMode, setTickMode] = useState<TickMode>("desktop");
+  const [tickMode, setTickMode] = useState<TickMode>("mobile");
   const [timeframe, setTimeframe] = useState<Timeframe>("1m");
   const [indicatorMode, setIndicatorMode] = useState<IndicatorMode>("ma");
   const [bollingerPeriod, setBollingerPeriod] = useState(25);
@@ -143,6 +145,8 @@ function App() {
   const [ifdLimitPrice, setIfdLimitPrice] = useState("");
   const [ifdTargetPrice, setIfdTargetPrice] = useState("");
   const [ifdStopPrice, setIfdStopPrice] = useState("");
+  const [ifdTargetPriceSynced, setIfdTargetPriceSynced] = useState(true);
+  const [ifdStopPriceSynced, setIfdStopPriceSynced] = useState(true);
   const [pendingOcoOrders, setPendingOcoOrders] = useState<PendingOcoOrder[]>([]);
   const [walkState, setWalkState] = useState<IntrabarWalkState | null>(null);
   const [isCsvDragging, setIsCsvDragging] = useState(false);
@@ -231,6 +235,17 @@ function App() {
       window.clearInterval(advanceTimer);
     };
   }, [bars, bars.length, currentBar, currentIndex, playing, speed, tickMode, timeframe]);
+
+  useEffect(() => {
+    if (orderMode !== "ifdoco" || !displayCurrentBar) return;
+    const currentPrice = formatOrderPriceInput(displayCurrentBar.close);
+    if (ifdTargetPriceSynced) {
+      setIfdTargetPrice(currentPrice);
+    }
+    if (ifdStopPriceSynced) {
+      setIfdStopPrice(currentPrice);
+    }
+  }, [displayCurrentBar?.close, ifdStopPriceSynced, ifdTargetPriceSynced, orderMode]);
 
   useEffect(() => {
     return () => {
@@ -333,13 +348,13 @@ function App() {
   }
 
   function addSyntheticSample() {
-    const result = parseCsvText(buildSyntheticCsv(), "DEMO_架空銘柄_1m.csv");
+    const result = parseCsvText(buildSyntheticCsv(), "DEMO_半導体風_1m.csv");
     setSymbols((current) => mergeSymbols(current, [result.symbol]));
     setSelectedSymbolId(result.symbol.id);
     setRequestedDate("");
     setReplayIndex(0);
     setPlaying(false);
-    setParseMessage("架空サンプルを生成しました。実在相場データではありません。");
+    setParseMessage("半導体株風の架空サンプルを生成しました。実在相場データではありません。");
   }
 
   async function persistSession() {
@@ -372,7 +387,7 @@ function App() {
     setSelectedSymbolId(session.selectedSymbolId ?? session.symbols[0]?.id);
     setReplayIndex(session.replayIndex);
     setSpeed(session.speed);
-    setTickMode(session.tickMode ?? "desktop");
+    setTickMode(session.tickMode ?? "mobile");
     setTimeframe(session.timeframe ?? "1m");
     setIndicatorMode(session.indicatorMode ?? "ma");
     setBollingerPeriod(session.bollingerPeriod ?? 25);
@@ -391,6 +406,20 @@ function App() {
     setParseMessage("仮想取引と保存セッションをクリアしました。読み込み済みCSVは画面上に残しています。");
   }
 
+  function setPriceToCurrent(setter: (value: string) => void) {
+    if (!displayCurrentBar) return;
+    setter(formatOrderPriceInput(displayCurrentBar.close));
+  }
+
+  function movePriceByTick(value: string, setter: (value: string) => void, direction: 1 | -1) {
+    const parsed = parseOrderPrice(value);
+    const reference = Number.isFinite(parsed) ? parsed : displayCurrentBar?.close;
+    if (reference == null || !Number.isFinite(reference) || reference <= 0) return;
+    const current = roundToTseTick(reference);
+    const next = moveToAdjacentTseTick(current, direction, 0, Number.MAX_SAFE_INTEGER);
+    setter(formatOrderPriceInput(next));
+  }
+
   function placeOrder(orderSide: Side) {
     if (!selectedSymbol || !currentBar) {
       setParseMessage("注文前にCSVを読み込んでリプレイ位置を選択してください。");
@@ -407,7 +436,7 @@ function App() {
         tradeType,
         orderType,
         quantity: normalizedQuantity,
-        limitPrice: orderType === "limit" ? Number(limitPrice) : undefined,
+        limitPrice: orderType === "limit" ? parseOrderPrice(limitPrice) : undefined,
         bar: {
           ...displayCurrentBar,
           datetime: displayDatetime ?? displayCurrentBar.datetime,
@@ -436,9 +465,9 @@ function App() {
 
     const normalizedQuantity = normalizeLotQuantity(ifdQuantity);
     const activeBar = displayCurrentBar ?? currentBar;
-    const entryReferencePrice = ifdOrderType === "limit" ? Number(ifdLimitPrice) : activeBar.close;
-    const targetPrice = Number(ifdTargetPrice);
-    const stopPrice = Number(ifdStopPrice);
+    const entryReferencePrice = ifdOrderType === "limit" ? parseOrderPrice(ifdLimitPrice) : activeBar.close;
+    const targetPrice = parseOrderPrice(ifdTargetPrice);
+    const stopPrice = parseOrderPrice(ifdStopPrice);
     setIfdQuantity(normalizedQuantity);
 
     if (![entryReferencePrice, targetPrice, stopPrice].every(Number.isFinite)) {
@@ -867,16 +896,19 @@ function App() {
             <h2>口座サマリー</h2>
             <label className="capital-field">
               初期資金
-              <input
-                min={0}
-                step={100000}
-                type="number"
+              <select
                 value={trading.initialCash}
                 onChange={(event) => {
                   const nextInitialCash = Number(event.currentTarget.value);
                   setTrading((current) => updateInitialCash(current, nextInitialCash));
                 }}
-              />
+              >
+                {INITIAL_CASH_OPTIONS.map((cash) => (
+                  <option key={cash} value={cash}>
+                    {formatYen(cash)}
+                  </option>
+                ))}
+              </select>
             </label>
             <Metric label="仮想資金" value={formatYen(trading.initialCash)} />
             <Metric label="現金残高" value={formatYen(trading.cash)} />
@@ -1040,15 +1072,40 @@ function App() {
                     onChange={(event) => setQuantity(Number(event.currentTarget.value))}
                   />
                 </label>
-                <label>
-                  指値価格
-                  <input
-                    disabled={orderType === "market"}
-                    inputMode="decimal"
-                    placeholder={displayCurrentBar ? formatPrice(displayCurrentBar.close) : "-"}
-                    value={limitPrice}
-                    onChange={(event) => setLimitPrice(event.currentTarget.value)}
-                  />
+                <label className="price-field">
+                  <span>指値価格</span>
+                  <div className="price-input-row">
+                    <input
+                      disabled={orderType === "market"}
+                      inputMode="decimal"
+                      placeholder={displayCurrentBar ? formatPrice(displayCurrentBar.close) : "-"}
+                      value={limitPrice}
+                      onChange={(event) => setLimitPrice(event.currentTarget.value)}
+                    />
+                    <button
+                      type="button"
+                      disabled={orderType === "market" || !displayCurrentBar}
+                      onClick={() => setPriceToCurrent(setLimitPrice)}
+                    >
+                      現在値
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="指値価格を1呼値下げる"
+                      disabled={orderType === "market" || !displayCurrentBar}
+                      onClick={() => movePriceByTick(limitPrice, setLimitPrice, -1)}
+                    >
+                      -
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="指値価格を1呼値上げる"
+                      disabled={orderType === "market" || !displayCurrentBar}
+                      onClick={() => movePriceByTick(limitPrice, setLimitPrice, 1)}
+                    >
+                      +
+                    </button>
+                  </div>
                 </label>
                 <div className="order-actions">
                   <button type="button" className="buy-button" onClick={() => placeOrder("buy")}>
@@ -1087,33 +1144,132 @@ function App() {
                     onChange={(event) => setIfdQuantity(Number(event.currentTarget.value))}
                   />
                 </label>
-                <label>
-                  新規指値
-                  <input
-                    disabled={ifdOrderType === "market"}
-                    inputMode="decimal"
-                    placeholder={displayCurrentBar ? formatPrice(displayCurrentBar.close) : "-"}
-                    value={ifdLimitPrice}
-                    onChange={(event) => setIfdLimitPrice(event.currentTarget.value)}
-                  />
+                <label className="price-field">
+                  <span>新規指値</span>
+                  <div className="price-input-row">
+                    <input
+                      disabled={ifdOrderType === "market"}
+                      inputMode="decimal"
+                      placeholder={displayCurrentBar ? formatPrice(displayCurrentBar.close) : "-"}
+                      value={ifdLimitPrice}
+                      onChange={(event) => setIfdLimitPrice(event.currentTarget.value)}
+                    />
+                    <button
+                      type="button"
+                      disabled={ifdOrderType === "market" || !displayCurrentBar}
+                      onClick={() => setPriceToCurrent(setIfdLimitPrice)}
+                    >
+                      現在値
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="新規指値を1呼値下げる"
+                      disabled={ifdOrderType === "market" || !displayCurrentBar}
+                      onClick={() => movePriceByTick(ifdLimitPrice, setIfdLimitPrice, -1)}
+                    >
+                      -
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="新規指値を1呼値上げる"
+                      disabled={ifdOrderType === "market" || !displayCurrentBar}
+                      onClick={() => movePriceByTick(ifdLimitPrice, setIfdLimitPrice, 1)}
+                    >
+                      +
+                    </button>
+                  </div>
                 </label>
-                <label>
-                  利確価格
-                  <input
-                    inputMode="decimal"
-                    placeholder={displayCurrentBar ? formatPrice(displayCurrentBar.close * 1.01) : "-"}
-                    value={ifdTargetPrice}
-                    onChange={(event) => setIfdTargetPrice(event.currentTarget.value)}
-                  />
+                <label className="price-field">
+                  <span>利確価格</span>
+                  <div className="price-input-row">
+                    <input
+                      inputMode="decimal"
+                      placeholder={displayCurrentBar ? formatPrice(displayCurrentBar.close) : "-"}
+                      value={ifdTargetPrice}
+                      onChange={(event) => {
+                        setIfdTargetPriceSynced(false);
+                        setIfdTargetPrice(event.currentTarget.value);
+                      }}
+                    />
+                    <button
+                      type="button"
+                      disabled={!displayCurrentBar}
+                      onClick={() => {
+                        setIfdTargetPriceSynced(true);
+                        setPriceToCurrent(setIfdTargetPrice);
+                      }}
+                    >
+                      現在値
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="利確価格を1呼値下げる"
+                      disabled={!displayCurrentBar}
+                      onClick={() => {
+                        setIfdTargetPriceSynced(false);
+                        movePriceByTick(ifdTargetPrice, setIfdTargetPrice, -1);
+                      }}
+                    >
+                      -
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="利確価格を1呼値上げる"
+                      disabled={!displayCurrentBar}
+                      onClick={() => {
+                        setIfdTargetPriceSynced(false);
+                        movePriceByTick(ifdTargetPrice, setIfdTargetPrice, 1);
+                      }}
+                    >
+                      +
+                    </button>
+                  </div>
                 </label>
-                <label>
-                  損切価格
-                  <input
-                    inputMode="decimal"
-                    placeholder={displayCurrentBar ? formatPrice(displayCurrentBar.close * 0.99) : "-"}
-                    value={ifdStopPrice}
-                    onChange={(event) => setIfdStopPrice(event.currentTarget.value)}
-                  />
+                <label className="price-field">
+                  <span>損切価格</span>
+                  <div className="price-input-row">
+                    <input
+                      inputMode="decimal"
+                      placeholder={displayCurrentBar ? formatPrice(displayCurrentBar.close) : "-"}
+                      value={ifdStopPrice}
+                      onChange={(event) => {
+                        setIfdStopPriceSynced(false);
+                        setIfdStopPrice(event.currentTarget.value);
+                      }}
+                    />
+                    <button
+                      type="button"
+                      disabled={!displayCurrentBar}
+                      onClick={() => {
+                        setIfdStopPriceSynced(true);
+                        setPriceToCurrent(setIfdStopPrice);
+                      }}
+                    >
+                      現在値
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="損切価格を1呼値下げる"
+                      disabled={!displayCurrentBar}
+                      onClick={() => {
+                        setIfdStopPriceSynced(false);
+                        movePriceByTick(ifdStopPrice, setIfdStopPrice, -1);
+                      }}
+                    >
+                      -
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="損切価格を1呼値上げる"
+                      disabled={!displayCurrentBar}
+                      onClick={() => {
+                        setIfdStopPriceSynced(false);
+                        movePriceByTick(ifdStopPrice, setIfdStopPrice, 1);
+                      }}
+                    >
+                      +
+                    </button>
+                  </div>
                 </label>
                 <p className="notice compact-notice">
                   新規が現在バーで約定した場合にOCO返済を登録します。同一バーでの返済判定は行いません。
@@ -1209,6 +1365,15 @@ function mergeSymbols(current: SymbolData[], incoming: SymbolData[]): SymbolData
 function normalizeLotQuantity(value: number): number {
   if (!Number.isFinite(value)) return LOT_SIZE;
   return Math.max(LOT_SIZE, Math.round(value / LOT_SIZE) * LOT_SIZE);
+}
+
+function parseOrderPrice(value: string): number {
+  return Number(value.replace(/,/g, ""));
+}
+
+function formatOrderPriceInput(value: number): string {
+  const rounded = roundToTseTick(value);
+  return Number.isInteger(rounded) ? String(rounded) : String(Number(rounded.toFixed(10)));
 }
 
 function formatPositionSide(product: PositionProduct, side: "long" | "short"): string {

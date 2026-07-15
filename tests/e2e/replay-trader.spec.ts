@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 
 const SAMPLE_DATE = "2024-05-17";
 
@@ -10,9 +10,9 @@ async function loadSyntheticSample(page: Page) {
   await openApp(page);
   await page.getByRole("button", { name: "架空サンプルを生成" }).click();
 
-  await expect(page.getByText("架空サンプルを生成しました。実在相場データではありません。")).toBeVisible();
-  await expect(page.getByRole("button", { name: /DEMO_架空銘柄_1m/ })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "DEMO_架空銘柄_1m" })).toBeVisible();
+  await expect(page.getByText("半導体株風の架空サンプルを生成しました。実在相場データではありません。")).toBeVisible();
+  await expect(page.getByRole("button", { name: /DEMO_半導体風_1m/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "DEMO_半導体風_1m" })).toBeVisible();
 }
 
 function chartHeader(page: Page) {
@@ -28,11 +28,16 @@ function summaryCard(page: Page) {
 }
 
 function summaryMetric(page: Page, label: string) {
-  return summaryCard(page).locator(".metric").filter({ hasText: label }).locator("strong");
+  return summaryCard(page).locator(".metric").filter({ has: page.getByText(label, { exact: true }) }).locator("strong");
 }
 
 function positionsSection(page: Page) {
   return page.locator(".table-section").filter({ has: page.getByRole("heading", { name: "建玉" }) });
+}
+
+async function pricesMatchCurrent(targetInput: Locator, stopInput: Locator, currentValue: Locator) {
+  const current = (await currentValue.innerText()).replace(/,/g, "");
+  return (await targetInput.inputValue()) === current && (await stopInput.inputValue()) === current;
 }
 
 async function openOrderModal(page: Page) {
@@ -103,7 +108,7 @@ test.describe("Replay Trader major flows", () => {
 
     await expect(page.getByText(`未指定のため、今日に最も近い ${SAMPLE_DATE} を表示中`)).toBeVisible();
     await expect(chartHeader(page).getByText(new RegExp(`${SAMPLE_DATE} 09:00:[0-5][0-9]\\+0900`))).toBeVisible();
-    await expect(page.getByText("1 / 220")).toBeVisible();
+    await expect(page.getByText("1 / 300")).toBeVisible();
     await expect(page.getByText("MA5")).toBeVisible();
     await expect(page.getByText("MA25")).toBeVisible();
     await expect(page.getByText("MA60")).toBeVisible();
@@ -118,7 +123,9 @@ test.describe("Replay Trader major flows", () => {
     await expect(summaryCard(page).getByText("売り建玉損益")).toBeVisible();
     await expect(summaryCard(page).getByText("建玉損益合計")).toBeVisible();
     await expect(summaryCard(page).getByText("トータル損益")).toBeVisible();
-    await expect(summaryCard(page).getByText("5,000,000 円")).toHaveCount(3);
+    await expect(summaryMetric(page, "仮想資金")).toHaveText("5,000,000 円");
+    await expect(summaryMetric(page, "現金残高")).toHaveText("5,000,000 円");
+    await expect(summaryMetric(page, "評価額")).toHaveText("5,000,000 円");
     await expect(summaryCard(page).getByText("信用建余力", { exact: true })).toBeVisible();
     await expect(summaryCard(page).getByText("16,666,667 円")).toBeVisible();
     await expect(summaryCard(page).getByText("信用維持率")).toBeVisible();
@@ -126,14 +133,17 @@ test.describe("Replay Trader major flows", () => {
 
   test("初期資金を変更できる", async ({ page }) => {
     await loadSyntheticSample(page);
-    const initialCashInput = page.locator(".capital-field input");
+    const initialCashSelect = page.getByLabel("初期資金");
 
-    await expect(initialCashInput).toBeVisible();
-    await initialCashInput.fill("7000000");
+    await expect(initialCashSelect).toBeVisible();
+    await expect(initialCashSelect).toHaveValue("5000000");
+    await initialCashSelect.selectOption("1000000");
 
-    await expect(initialCashInput).toHaveValue("7000000");
-    await expect(summaryCard(page).getByText("7,000,000 円")).toHaveCount(3);
-    await expect(summaryCard(page).getByText("23,333,333 円")).toBeVisible();
+    await expect(initialCashSelect).toHaveValue("1000000");
+    await expect(summaryMetric(page, "仮想資金")).toHaveText("1,000,000 円");
+    await expect(summaryMetric(page, "現金残高")).toHaveText("1,000,000 円");
+    await expect(summaryMetric(page, "評価額")).toHaveText("1,000,000 円");
+    await expect(summaryCard(page).getByText("3,333,333 円")).toBeVisible();
   });
 
   test("注文数量は100株単位で増減する", async ({ page }) => {
@@ -146,6 +156,24 @@ test.describe("Replay Trader major flows", () => {
     await page.keyboard.press("ArrowUp");
 
     await expect(quantityInput).toHaveValue("200");
+  });
+
+  test("指値価格に現在値を反映し、呼値単位で上下できる", async ({ page }) => {
+    await loadSyntheticSample(page);
+    const dialog = await openOrderModal(page);
+    const priceField = dialog.locator(".price-field").filter({ hasText: "指値価格" });
+    const priceInput = priceField.locator("input");
+
+    await dialog.getByRole("button", { name: "指値", exact: true }).click();
+    await priceField.getByRole("button", { name: "現在値" }).click();
+
+    await expect(priceInput).toHaveValue("9009");
+
+    await priceField.getByRole("button", { name: "指値価格を1呼値上げる" }).click();
+    await expect(priceInput).toHaveValue("9010");
+
+    await priceField.getByRole("button", { name: "指値価格を1呼値下げる" }).click();
+    await expect(priceInput).toHaveValue("9009");
   });
 
   test("現物保有と信用建玉を別行で表示する", async ({ page }) => {
@@ -169,14 +197,52 @@ test.describe("Replay Trader major flows", () => {
     await expect(page.getByText("約定履歴は右ペインに記録されます")).toBeVisible();
   });
 
+  test("チャート上の約定ラベルをドラッグで移動できる", async ({ page }) => {
+    await loadSyntheticSample(page);
+    const dialog = await openOrderModal(page);
+    await dialog.getByRole("button", { name: "買い注文" }).click();
+    await dialog.getByRole("button", { name: "閉じる" }).click();
+
+    const label = page.locator(".execution-label").first();
+    await expect(label).toBeVisible();
+    const before = await label.boundingBox();
+    expect(before).not.toBeNull();
+
+    await page.mouse.move((before?.x ?? 0) + 12, (before?.y ?? 0) + 12);
+    await page.mouse.down();
+    await page.mouse.move((before?.x ?? 0) + 92, (before?.y ?? 0) + 44, { steps: 8 });
+    await page.mouse.up();
+
+    const after = await label.boundingBox();
+    expect(after).not.toBeNull();
+    expect(Math.abs((after?.x ?? 0) - (before?.x ?? 0))).toBeGreaterThan(20);
+    expect(Math.abs((after?.y ?? 0) - (before?.y ?? 0))).toBeGreaterThan(10);
+  });
+
+  test("IFDOCOの利確価格と損切価格は現在値に同期する", async ({ page }) => {
+    await loadSyntheticSample(page);
+    const dialog = await openOrderModal(page);
+
+    await dialog.getByRole("button", { name: "IFDOCO" }).click();
+    const targetInput = dialog.locator(".price-field").filter({ hasText: "利確価格" }).locator("input");
+    const stopInput = dialog.locator(".price-field").filter({ hasText: "損切価格" }).locator("input");
+    const currentValue = dialog.locator(".order-modal-status .metric").filter({ hasText: "現在値" }).locator("strong");
+
+    await expect.poll(async () => pricesMatchCurrent(targetInput, stopInput, currentValue)).toBe(true);
+
+    await page.getByRole("button", { name: "次へ" }).click();
+
+    await expect.poll(async () => pricesMatchCurrent(targetInput, stopInput, currentValue)).toBe(true);
+  });
+
   test("注文モーダルでIFDOCOを入力できる", async ({ page }) => {
     await loadSyntheticSample(page);
     const dialog = await openOrderModal(page);
 
     await dialog.getByRole("button", { name: "IFDOCO" }).click();
     await dialog.getByLabel("新規区分").selectOption("marginOpen");
-    await dialog.locator("label").filter({ hasText: "利確価格" }).locator("input").fill("2810");
-    await dialog.locator("label").filter({ hasText: "損切価格" }).locator("input").fill("2790");
+    await dialog.locator("label").filter({ hasText: "利確価格" }).locator("input").fill("9100");
+    await dialog.locator("label").filter({ hasText: "損切価格" }).locator("input").fill("8900");
     await dialog.getByRole("button", { name: "買いIFDOCO" }).click();
 
     await expect(page.getByText("IFDOCO新規注文が約定し、OCO返済条件を登録しました。実注文ではありません。")).toBeVisible();
@@ -224,35 +290,35 @@ test.describe("Replay Trader major flows", () => {
 
     await expect(page.getByText(`指定日にデータがないため、最も近い ${SAMPLE_DATE} を表示中`)).toBeVisible();
     await expect(chartHeader(page).getByText(new RegExp(`${SAMPLE_DATE} 09:00:[0-5][0-9]\\+0900`))).toBeVisible();
-    await expect(page.getByText("1 / 220")).toBeVisible();
+    await expect(page.getByText("1 / 300")).toBeVisible();
   });
 
   test("1分足と5分足を切り替えられる", async ({ page }) => {
     await loadSyntheticSample(page);
 
     const tickMode = page.getByLabel("Tick");
-    await expect(tickMode).toHaveValue("desktop");
-    await tickMode.selectOption("mobile");
     await expect(tickMode).toHaveValue("mobile");
     await tickMode.selectOption("desktop");
     await expect(tickMode).toHaveValue("desktop");
+    await tickMode.selectOption("mobile");
+    await expect(tickMode).toHaveValue("mobile");
 
     const timeframe = page.getByLabel("時間足");
     await expect(timeframe).toHaveValue("1m");
     await expect(dataCard(page).getByText("1分足", { exact: true })).toBeVisible();
-    await expect(page.getByText("1 / 220")).toBeVisible();
+    await expect(page.getByText("1 / 300")).toBeVisible();
 
     await timeframe.selectOption("5m");
 
     await expect(timeframe).toHaveValue("5m");
     await expect(dataCard(page).getByText("5分足", { exact: true })).toBeVisible();
-    await expect(page.getByText("1 / 44")).toBeVisible();
+    await expect(page.getByText("1 / 60")).toBeVisible();
 
     await timeframe.selectOption("1m");
 
     await expect(timeframe).toHaveValue("1m");
     await expect(dataCard(page).getByText("1分足", { exact: true })).toBeVisible();
-    await expect(page.getByText("1 / 220")).toBeVisible();
+    await expect(page.getByText("1 / 300")).toBeVisible();
   });
 
   test("インジケーターを移動平均とボリンジャーバンドで切り替えられる", async ({ page }) => {
@@ -294,7 +360,7 @@ test.describe("Replay Trader major flows", () => {
     await page.getByRole("button", { name: "60x" }).click();
     await page.getByRole("button", { name: "再生" }).click();
 
-    await expect(page.getByText("2 / 220")).toBeVisible({ timeout: 1_800 });
+    await expect(page.getByText("2 / 300")).toBeVisible({ timeout: 1_800 });
     await page.getByRole("button", { name: "一時停止" }).click();
 
     await page.getByLabel("時間足").selectOption("5m");
@@ -302,7 +368,7 @@ test.describe("Replay Trader major flows", () => {
     await page.getByRole("button", { name: "再生" }).click();
     await page.waitForTimeout(2_000);
 
-    await expect(page.getByText("1 / 44")).toBeVisible();
+    await expect(page.getByText("1 / 60")).toBeVisible();
   });
 
   test("チャート上でSpaceキーを押すと再生と一時停止を切り替えられる", async ({ page }) => {
@@ -323,12 +389,12 @@ test.describe("Replay Trader major flows", () => {
 
     await page.getByRole("button", { name: "60x" }).click();
     await page.getByRole("button", { name: "再生" }).click();
-    await expect(page.getByText("1 / 220")).toBeVisible();
+    await expect(page.getByText("1 / 300")).toBeVisible();
 
     await expect(chartHeader(page).getByText(new RegExp(`${SAMPLE_DATE} 09:00:[0-5][0-9]\\+0900`))).toBeVisible();
     await page.waitForTimeout(300);
 
-    await expect(page.getByText("1 / 220")).toBeVisible();
+    await expect(page.getByText("1 / 300")).toBeVisible();
     await expect(chartHeader(page).getByText(new RegExp(`${SAMPLE_DATE} 09:00:(0[1-9]|[1-5][0-9])\\+0900`))).toBeVisible();
   });
 
@@ -340,11 +406,11 @@ test.describe("Replay Trader major flows", () => {
 
     await page.getByRole("button", { name: "60x" }).click();
     await page.getByRole("button", { name: "再生" }).click();
-    await expect(page.getByText("1 / 220")).toBeVisible();
+    await expect(page.getByText("1 / 300")).toBeVisible();
 
     const firstOhlc = await page.locator(".ohlc-strip").innerText();
     await page.waitForTimeout(300);
-    await expect(page.getByText("1 / 220")).toBeVisible();
+    await expect(page.getByText("1 / 300")).toBeVisible();
     const updatedOhlc = await page.locator(".ohlc-strip").innerText();
 
     expect(updatedOhlc).not.toBe(firstOhlc);

@@ -80,27 +80,71 @@ export function parseCsvText(text: string, fileName = "uploaded.csv"): ParseResu
 
 export function buildSyntheticCsv(): string {
   const rows = ["Datetime,Close,High,Low,Open,Volume"];
-  let price = 2800;
+  let price = 9020;
   const startUtc = Date.UTC(2024, 4, 17, 0, 0, 0);
 
-  for (let i = 0; i < 220; i += 1) {
-    const minute = i < 120 ? i : i + 90;
+  for (let i = 0; i < 300; i += 1) {
+    const minute = i < 150 ? i : i + 60;
     const date = new Date(startUtc + minute * 60_000);
-    const trend = Math.sin(i / 16) * 10 + Math.sin(i / 43) * 18;
     const open = price;
-    const close = Math.max(50, open + trend * 0.08 + Math.sin(i * 1.7) * 2.4);
-    const high = Math.max(open, close) + 3 + Math.abs(Math.sin(i / 7) * 4);
-    const low = Math.min(open, close) - 3 - Math.abs(Math.cos(i / 9) * 3);
-    const volume = Math.round(20_000 + Math.abs(Math.sin(i / 11)) * 110_000);
+    const target = syntheticSemiconductorTargetPrice(i);
+    const noise = deterministicNoise(i) - 0.5;
+    const rawChange = (target - open) * 0.18 + noise * 34 + Math.sin(i * 1.9) * 7;
+    const close = Math.max(50, Math.round(open + clamp(rawChange, -78, 78)));
+    const eventVolatility = gaussian(i, 52, 14) * 18 + gaussian(i, 198, 24) * 24 + gaussian(i, 282, 18) * 14;
+    const high = Math.round(Math.max(open, close) + 9 + Math.abs(Math.sin(i / 5.5) * 18) + eventVolatility);
+    const low = Math.round(Math.min(open, close) - 9 - Math.abs(Math.cos(i / 6.5) * 16) - eventVolatility * 0.75);
+    const volume = Math.round(syntheticSemiconductorVolume(i) / 100) * 100;
     price = close;
     rows.push(
-      `${formatAsJstCsvDate(date)},${close.toFixed(1)},${high.toFixed(1)},${low.toFixed(1)},${open.toFixed(
-        1,
-      )},${volume}`,
+      `${formatAsJstCsvDate(date)},${close},${high},${low},${open},${volume}`,
     );
   }
 
   return rows.join("\n");
+}
+
+function syntheticSemiconductorTargetPrice(index: number): number {
+  const stage =
+    index < 50
+      ? -260 * (index / 50)
+      : index < 120
+        ? -260 + 170 * ((index - 50) / 70)
+        : index < 190
+          ? -90 + 330 * ((index - 120) / 70)
+          : index < 250
+            ? 240 + 190 * ((index - 190) / 60)
+            : 430 - 150 * ((index - 250) / 50);
+  const cycle = Math.sin(index / 7.2) * 48 + Math.sin(index / 19) * 72 + Math.sin(index / 2.9) * 18;
+  const event = -110 * gaussian(index, 55, 11) + 170 * gaussian(index, 202, 20) - 80 * gaussian(index, 274, 15);
+  return 9020 + stage + cycle + event;
+}
+
+function syntheticSemiconductorVolume(index: number): number {
+  const base = 110_000;
+  const openingRush = 1_150_000 * gaussian(index, 5, 13);
+  const morningSelloff = 520_000 * gaussian(index, 55, 18);
+  const lunchReopen = 420_000 * gaussian(index, 152, 12);
+  const afternoonBreakout = 980_000 * gaussian(index, 204, 23);
+  const closingFlow = 640_000 * gaussian(index, 288, 18);
+  const pulse = Math.abs(Math.sin(index / 3.7)) * 95_000 + Math.abs(Math.sin(index / 17)) * 70_000;
+  return base + openingRush + morningSelloff + lunchReopen + afternoonBreakout + closingFlow + pulse;
+}
+
+function gaussian(value: number, center: number, width: number): number {
+  return Math.exp(-((value - center) ** 2) / (2 * width ** 2));
+}
+
+function deterministicNoise(seed: number): number {
+  return fract(Math.sin(seed * 12.9898 + 78.233) * 43758.5453);
+}
+
+function fract(value: number): number {
+  return value - Math.floor(value);
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }
 
 function splitCsvLine(line: string): string[] {
