@@ -8,10 +8,11 @@ async function openApp(page: Page) {
 
 async function loadSyntheticSample(page: Page) {
   await openApp(page);
+  await page.getByRole("button", { name: "銘柄メニューを開く" }).click();
   await page.getByRole("button", { name: "架空サンプルを生成" }).click();
 
-  await expect(page.getByText("半導体株風の架空サンプルを生成しました。実在相場データではありません。")).toBeVisible();
   await expect(page.getByRole("button", { name: /DEMO_半導体風_1m/ })).toBeVisible();
+  await page.getByRole("button", { name: /DEMO_半導体風_1m/ }).click();
   await expect(page.getByRole("heading", { name: "DEMO_半導体風_1m" })).toBeVisible();
 }
 
@@ -35,13 +36,17 @@ function positionsSection(page: Page) {
   return page.locator(".table-section").filter({ has: page.getByRole("heading", { name: "建玉" }) });
 }
 
+function executionsSection(page: Page) {
+  return page.locator(".table-section").filter({ has: page.getByRole("heading", { name: "約定履歴" }) });
+}
+
 async function pricesMatchCurrent(targetInput: Locator, stopInput: Locator, currentValue: Locator) {
   const current = (await currentValue.innerText()).replace(/,/g, "");
   return (await targetInput.inputValue()) === current && (await stopInput.inputValue()) === current;
 }
 
 async function openOrderModal(page: Page) {
-  await page.getByRole("button", { name: "注文パネルを開く" }).click();
+  await page.getByRole("button", { name: "注文パネル" }).click();
   const dialog = page.getByRole("dialog", { name: "仮想注文" });
   await expect(dialog).toBeVisible();
   return dialog;
@@ -54,21 +59,51 @@ test.describe("Replay Trader major flows", () => {
     await expect(page).toHaveTitle("Replay Trader");
     await expect(page.getByRole("heading", { name: "Replay Trader" })).toBeVisible();
     await expect(page.locator(".app-shell")).toHaveAttribute("data-theme", "dark");
-    await expect(page.getByRole("button", { name: "CSVファイルを選択 1分足 OHLCV / 複数選択可 / ドラッグ&ドロップ可" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "分足CSV" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "約定履歴CSV" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "実約定を非表示" })).toBeVisible();
+    await page.getByRole("button", { name: "実約定を非表示" }).click();
+    await expect(page.getByRole("button", { name: "実約定を表示" })).toBeVisible();
+    await page.getByRole("button", { name: "実約定を表示" }).click();
+    await page.getByRole("button", { name: "銘柄メニューを開く" }).click();
     await expect(page.getByRole("button", { name: "架空サンプルを生成" })).toBeVisible();
-    await expect(page.getByText("CSVを選択するか、架空サンプルを生成してください。")).toBeVisible();
-    await expect(page.getByText("読み込み済みCSVはありません。")).toBeVisible();
     await expect(page.getByText("CSV読込後に日付を選択できます。")).toBeVisible();
+    await expect(page.getByText("読み込み済みCSVはありません。")).toBeVisible();
+    await page.getByRole("button", { name: "銘柄メニューを閉じる" }).click();
     await expect(page.getByText("CSVを読み込んでください").first()).toBeVisible();
     await expect(page.getByRole("button", { name: "再生" })).toBeDisabled();
-    await expect(page.getByRole("button", { name: "保存" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "保存", exact: true })).toBeDisabled();
     await expect(page.getByRole("button", { name: "買い", exact: true })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "売り", exact: true })).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "注文パネルを開く" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "注文パネル" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "チャートをスクショ保存" })).toBeDisabled();
     await expect(page.getByRole("button", { name: "買い注文" })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "売り注文" })).toHaveCount(0);
     await expect(page.getByText("建玉はありません。")).toBeVisible();
-    await expect(page.getByText("履歴はありません。")).toBeVisible();
+    await expect(executionsSection(page).getByText("履歴はありません。", { exact: true })).toBeVisible();
+  });
+
+  test("言語ボタンで主要UIを英語表記に切り替えられる", async ({ page }) => {
+    await openApp(page);
+
+    await page.getByRole("button", { name: "銘柄メニューを開く" }).click();
+    await page.getByRole("button", { name: "English" }).click();
+
+    await expect(page.getByRole("button", { name: "日本語" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Bar CSV" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Trade history CSV" })).toBeVisible();
+    await expect(page.getByText("You can choose a date after loading a CSV file.")).toBeVisible();
+    await expect(page.getByText("No CSV files loaded.")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Generate sample" })).toBeVisible();
+    await expect(page.getByText("No investment advice")).toHaveCount(0);
+    await expect(page.getByText("Browser-only processing")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Play" })).toBeDisabled();
+
+    await page.getByRole("button", { name: "Generate sample" }).click();
+
+    await expect(page.getByRole("button", { name: "Order panel" })).toBeVisible();
+    await expect(page.getByText("Account Summary")).toBeVisible();
+    await expect(page.getByText("Margin buying power", { exact: true })).toBeVisible();
   });
 
   test("CSVファイルをドラッグアンドドロップで読み込める", async ({ page }) => {
@@ -84,13 +119,13 @@ test.describe("Replay Trader major flows", () => {
       transfer.items.add(new File([csv], "DND_TEST.csv", { type: "text/csv" }));
       return transfer;
     }, csvText);
-    const dropZone = page.locator(".file-drop");
+    const dropZone = page.locator(".bars-upload-button");
 
     await dropZone.dispatchEvent("dragover", { dataTransfer });
     await expect(dropZone).toHaveClass(/dragging/);
     await dropZone.dispatchEvent("drop", { dataTransfer });
 
-    await expect(page.getByText("DND_TEST.csv: 3 本を読み込みました。")).toBeVisible();
+    await page.getByRole("button", { name: "銘柄メニューを開く" }).click();
     await expect(page.getByRole("button", { name: /DND_TEST/ })).toBeVisible();
     await expect(page.getByRole("heading", { name: "DND_TEST" })).toBeVisible();
     await expect(chartHeader(page).getByText("2024-05-17 09:00:00+0900", { exact: true })).toBeVisible();
@@ -101,12 +136,42 @@ test.describe("Replay Trader major flows", () => {
     const symbolRow = page.getByRole("button", { name: /DND_TEST/ });
     await expect(symbolRow.getByText("前日比 +10 (+11.1%)")).toBeVisible();
     await expect(symbolRow.getByText("3 行")).toBeVisible();
+    await page.getByRole("button", { name: "銘柄メニューを閉じる" }).click();
+  });
+
+  test("約定済みの取引履歴だけを該当銘柄のリプレイへ表示する", async ({ page }) => {
+    await openApp(page);
+    const barCsv = [
+      "Datetime,Close,High,Low,Open,Volume",
+      "2026-07-23 09:00:00+0900,12720,12730,12700,12710,1000",
+      "2026-07-23 09:01:00+0900,12690,12720,12680,12720,1000",
+      "2026-07-23 09:02:00+0900,12680,12690,12670,12690,1000",
+    ].join("\n");
+    const historyCsv = [
+      "注文番号,アルゴ注文番号,状況,注文日時,注文期限,銘柄,銘柄コード・市場,取引,売買,注文方法,注文数量[株/口],約定数量[株/口],約定単価[円],約定代金[円]",
+      "2,1-2,約定,07/23 09:02:06,2026/07/23,太陽誘電,6976 東証(SOR),信用返済,買埋,通常注文,100,100,12680.0,1268000",
+      "1,1-1,約定,07/23 09:02:00,2026/07/23,太陽誘電,6976 東証(SOR),信用新規,売建,通常注文,100,100,12720.0,1272000",
+      "3,3-1,取消済（出来無）,07/23 09:10:00,2026/07/23,太陽誘電,6976 東証(SOR),信用新規,買建,通常注文,100,0,-,0",
+    ].join("\n");
+
+    const fileInputs = page.locator('input[type="file"]');
+    await fileInputs.nth(0).setInputFiles({ name: "太陽誘電.csv", mimeType: "text/csv", buffer: Buffer.from(barCsv) });
+    await fileInputs.nth(1).setInputFiles({ name: "stockorder.csv", mimeType: "text/csv", buffer: Buffer.from(historyCsv) });
+
+    const historicalSection = page.locator(".historical-trades-section");
+    await page.getByRole("button", { name: "次へ" }).click();
+    await page.getByRole("button", { name: "次へ" }).click();
+    await expect(historicalSection.getByRole("cell", { name: "信用新規売" })).toBeVisible();
+    await expect(historicalSection.getByRole("cell", { name: "信用返済買" })).toBeVisible();
+    await expect(page.locator(".execution-label")).toHaveCount(2);
   });
 
   test("架空サンプル生成で銘柄、チャート、口座サマリーが有効になる", async ({ page }) => {
     await loadSyntheticSample(page);
 
+    await page.getByRole("button", { name: "銘柄メニューを開く" }).click();
     await expect(page.getByText(`未指定のため、今日に最も近い ${SAMPLE_DATE} を表示中`)).toBeVisible();
+    await page.getByRole("button", { name: "銘柄メニューを閉じる" }).click();
     await expect(chartHeader(page).getByText(new RegExp(`${SAMPLE_DATE} 09:00:[0-5][0-9]\\+0900`))).toBeVisible();
     await expect(page.getByText("1 / 300")).toBeVisible();
     await expect(page.getByText("MA5")).toBeVisible();
@@ -117,7 +182,10 @@ test.describe("Replay Trader major flows", () => {
     await expect(page.getByText("当日高")).toBeVisible();
     await expect(page.getByText("当日安")).toBeVisible();
     await expect(page.getByRole("button", { name: "再生" })).toBeEnabled();
-    await expect(page.getByRole("button", { name: "保存" })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "保存", exact: true })).toBeEnabled();
+    const screenshotDownload = page.waitForEvent("download");
+    await page.getByRole("button", { name: "チャートをスクショ保存" }).click();
+    await expect((await screenshotDownload).suggestedFilename()).toMatch(/\.png$/);
     await expect(summaryCard(page).getByText("仮想資金")).toBeVisible();
     await expect(summaryCard(page).getByText("買い建玉損益")).toBeVisible();
     await expect(summaryCard(page).getByText("売り建玉損益")).toBeVisible();
@@ -245,14 +313,13 @@ test.describe("Replay Trader major flows", () => {
     await dialog.locator("label").filter({ hasText: "損切価格" }).locator("input").fill("8900");
     await dialog.getByRole("button", { name: "買いIFDOCO" }).click();
 
-    await expect(page.getByText("IFDOCO新規注文が約定し、OCO返済条件を登録しました。実注文ではありません。")).toBeVisible();
     await expect(dialog.getByText("IFDOCO待機")).toBeVisible();
     await expect(dialog.getByText("1 件")).toBeVisible();
   });
 
   test("注文パネルはボタン近くに開き、ドラッグで移動できる", async ({ page }) => {
     await loadSyntheticSample(page);
-    const openButton = page.getByRole("button", { name: "注文パネルを開く" });
+    const openButton = page.getByRole("button", { name: "注文パネル" });
     const buttonBox = await openButton.boundingBox();
     const dialog = await openOrderModal(page);
     const initialBox = await dialog.boundingBox();
@@ -263,7 +330,7 @@ test.describe("Replay Trader major flows", () => {
     const dialogRight = (initialBox?.x ?? 0) + (initialBox?.width ?? 0);
     expect(Math.abs(dialogRight - buttonRight)).toBeLessThan(8);
     expect(initialBox?.y ?? 0).toBeGreaterThanOrEqual(0);
-    expect(initialBox?.y ?? 0).toBeLessThanOrEqual(buttonBox?.y ?? 0);
+    expect(Math.abs((initialBox?.y ?? 0) - (buttonBox?.y ?? 0))).toBeLessThan(28);
 
     await page.mouse.move((initialBox?.x ?? 0) + 90, (initialBox?.y ?? 0) + 22);
     await page.mouse.down();
@@ -278,19 +345,22 @@ test.describe("Replay Trader major flows", () => {
   test("日付未指定ではサンプルデータの最近傍日を表示する", async ({ page }) => {
     await loadSyntheticSample(page);
 
+    await page.getByRole("button", { name: "銘柄メニューを開く" }).click();
     await expect(page.getByLabel("リプレイ日")).toHaveValue("");
     await expect(page.getByText(`未指定のため、今日に最も近い ${SAMPLE_DATE} を表示中`)).toBeVisible();
-    await expect(dataCard(page).getByText(SAMPLE_DATE, { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "銘柄メニューを閉じる" }).click();
   });
 
   test("存在しない日付を指定すると最も近い日付へフォールバックする", async ({ page }) => {
     await loadSyntheticSample(page);
 
+    await page.getByRole("button", { name: "銘柄メニューを開く" }).click();
     await page.getByLabel("リプレイ日").fill("2024-05-19");
 
     await expect(page.getByText(`指定日にデータがないため、最も近い ${SAMPLE_DATE} を表示中`)).toBeVisible();
     await expect(chartHeader(page).getByText(new RegExp(`${SAMPLE_DATE} 09:00:[0-5][0-9]\\+0900`))).toBeVisible();
     await expect(page.getByText("1 / 300")).toBeVisible();
+    await page.getByRole("button", { name: "銘柄メニューを閉じる" }).click();
   });
 
   test("1分足と5分足を切り替えられる", async ({ page }) => {
@@ -305,19 +375,16 @@ test.describe("Replay Trader major flows", () => {
 
     const timeframe = page.getByLabel("時間足");
     await expect(timeframe).toHaveValue("1m");
-    await expect(dataCard(page).getByText("1分足", { exact: true })).toBeVisible();
     await expect(page.getByText("1 / 300")).toBeVisible();
 
     await timeframe.selectOption("5m");
 
     await expect(timeframe).toHaveValue("5m");
-    await expect(dataCard(page).getByText("5分足", { exact: true })).toBeVisible();
     await expect(page.getByText("1 / 60")).toBeVisible();
 
     await timeframe.selectOption("1m");
 
     await expect(timeframe).toHaveValue("1m");
-    await expect(dataCard(page).getByText("1分足", { exact: true })).toBeVisible();
     await expect(page.getByText("1 / 300")).toBeVisible();
   });
 
@@ -438,11 +505,13 @@ test.describe("Replay Trader major flows", () => {
     await openApp(page);
 
     await expect(page.locator(".app-shell")).toHaveAttribute("data-theme", "dark");
+    await page.getByRole("button", { name: "銘柄メニューを開く" }).click();
     await expect(page.getByRole("button", { name: "ライト" })).toBeVisible();
 
     await page.getByRole("button", { name: "ライト" }).click();
 
     await expect(page.locator(".app-shell")).toHaveAttribute("data-theme", "light");
     await expect(page.getByRole("button", { name: "ダーク" })).toBeVisible();
+    await page.getByRole("button", { name: "銘柄メニューを閉じる" }).click();
   });
 });

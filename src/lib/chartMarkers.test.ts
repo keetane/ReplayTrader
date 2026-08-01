@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { buildExecutionMarkerLabels, buildExecutionMarkers } from "./chartMarkers";
-import type { Execution } from "../types";
+import { alignHistoricalExecutionToBar, buildExecutionMarkerLabels, buildExecutionMarkers } from "./chartMarkers";
+import type { Bar, Execution } from "../types";
 
 const baseExecution: Execution = {
   id: "execution-1",
@@ -16,6 +16,39 @@ const baseExecution: Execution = {
 };
 
 describe("buildExecutionMarkers", () => {
+  it("moves an execution to the nearest bar that contains its actual price", () => {
+    const aligned = alignHistoricalExecutionToBar(
+      {
+        ...baseExecution,
+        time: "2026-07-31 09:27:43+0900",
+        price: 5_312,
+      },
+      [
+        makeBar("2026-07-31 09:27:00+0900", 5_295, 5_299, 5_260, 5_295),
+        makeBar("2026-07-31 09:28:00+0900", 5_287, 5_314, 5_285, 5_287),
+      ],
+      "1m",
+    );
+
+    expect(aligned).toMatchObject({
+      time: "2026-07-31 09:27:43+0900",
+      price: 5_312,
+      displayTime: "2026-07-31 09:28:00+0900",
+      displayPrice: 5_312,
+      displayAdjustment: "matched-bar",
+    });
+  });
+
+  it("clamps a price to the primary bar when no nearby bar contains it", () => {
+    const aligned = alignHistoricalExecutionToBar(
+      { ...baseExecution, time: "2026-07-31 09:27:43+0900", price: 5_500 },
+      [makeBar("2026-07-31 09:27:00+0900", 5_295, 5_299, 5_260, 5_295)],
+      "1m",
+    );
+
+    expect(aligned).toMatchObject({ displayTime: "2026-07-31 09:27:00+0900", displayPrice: 5_299, displayAdjustment: "clamped-to-bar" });
+  });
+
   it("keeps entry executions as side arrows", () => {
     const markers = buildExecutionMarkers(
       [
@@ -127,3 +160,15 @@ describe("buildExecutionMarkers", () => {
     expect(labels[1]).toMatchObject({ text: "利確 +12,000円 100", color: "#22c55e", verticalPreference: "above" });
   });
 });
+
+function makeBar(datetime: string, open: number, high: number, low: number, close: number): Bar {
+  return {
+    time: Math.floor(Date.parse(datetime.replace(" ", "T").replace("+0900", "+09:00")) / 1000) as Bar["time"],
+    datetime,
+    open,
+    high,
+    low,
+    close,
+    volume: 100,
+  };
+}

@@ -1,4 +1,6 @@
 import { type KeyboardEvent, type PointerEvent, useEffect, useMemo, useRef, useState } from "react";
+import html2canvas from "html2canvas";
+import { Download } from "lucide-react";
 import {
   CandlestickSeries,
   ColorType,
@@ -16,22 +18,27 @@ import {
   type WhitespaceData,
 } from "lightweight-charts";
 import { calculateVisibleBollingerBands, calculateVisibleMovingAverage } from "../lib/bars";
-import { buildExecutionMarkerLabels, buildExecutionMarkers, type ExecutionMarkerLabel } from "../lib/chartMarkers";
+import { alignHistoricalExecutionToBar, buildExecutionMarkerLabels, buildExecutionMarkers, historicalTradeAsExecution, type ExecutionMarkerLabel } from "../lib/chartMarkers";
 import { formatTseTickPrice } from "../lib/format";
-import type { Bar, Execution, IndicatorMode, ThemeMode, Timeframe } from "../types";
+import type { Bar, Execution, HistoricalTrade, IndicatorMode, LanguageMode, ThemeMode, Timeframe } from "../types";
 
 interface ChartPanelProps {
   bars: Bar[];
   maSourceBars: Bar[];
   executions: Execution[];
+  historicalTrades: HistoricalTrade[];
+  markerBars: Bar[];
   maPeriods: [number, number, number];
   indicatorMode: IndicatorMode;
+  languageMode: LanguageMode;
   bollingerPeriod: number;
   themeMode: ThemeMode;
   timeframe: Timeframe;
   viewportKey: string;
   canTogglePlayback: boolean;
   onTogglePlayback: () => void;
+  onScreenshotReady: (handler: (() => Promise<void>) | null) => void;
+  screenshotFileName: string;
 }
 
 const INDICATOR_COLORS = ["#ef4444", "#f97316", "#f59e0b", "#2563eb", "#22c55e", "#14b8a6", "#7c3aed"] as const;
@@ -100,14 +107,19 @@ export function ChartPanel({
   bars,
   maSourceBars,
   executions,
+  historicalTrades,
+  markerBars,
   maPeriods,
   indicatorMode,
+  languageMode,
   bollingerPeriod,
   themeMode,
   timeframe,
   viewportKey,
   canTogglePlayback,
   onTogglePlayback,
+  onScreenshotReady,
+  screenshotFileName,
 }: ChartPanelProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -123,9 +135,9 @@ export function ChartPanel({
   const [executionMarkerOutlines, setExecutionMarkerOutlines] = useState<PositionedExecutionMarkerOutline[]>([]);
   const [executionLabelOffsets, setExecutionLabelOffsets] = useState<Record<string, ExecutionLabelOffset>>({});
   const [hoveredIndicatorTime, setHoveredIndicatorTime] = useState<Bar["time"] | null>(null);
+  const [screenshotDataUrl, setScreenshotDataUrl] = useState<string | null>(null);
 
   const timeMapping = useMemo(() => buildChartTimeMapping(bars, timeframe), [bars, timeframe]);
-  const executionTimes = useMemo(() => new Set(executions.map((execution) => execution.time)), [executions]);
   const barTimes = useMemo(() => new Set(bars.map((bar) => bar.time)), [bars]);
   const indicatorSeries = useMemo(
     () => buildIndicatorSeries(indicatorMode, maPeriods, bollingerPeriod, maSourceBars, bars),
@@ -136,12 +148,51 @@ export function ChartPanel({
     [bars, hoveredIndicatorTime, indicatorSeries],
   );
   const isDark = themeMode === "dark";
+  const chartExecutions = useMemo(
+    () => [...executions, ...historicalTrades.map((trade) => alignHistoricalExecutionToBar(historicalTradeAsExecution(trade), markerBars, timeframe))],
+    [executions, historicalTrades, markerBars, timeframe],
+  );
+  const executionTimes = useMemo(() => new Set(chartExecutions.map((execution) => execution.time)), [chartExecutions]);
 
   useEffect(() => {
     displayTimeLabelsRef.current = new Map(
       timeMapping.displayBars.map((bar) => [Number(bar.time), bar.datetime]),
     );
   }, [timeMapping]);
+
+  useEffect(() => {
+    const captureScreenshot = async () => {
+      const target = containerRef.current?.closest(".chart-shell");
+      if (!(target instanceof HTMLElement)) return;
+
+      try {
+        const canvas = await html2canvas(target, {
+          backgroundColor: themeMode === "dark" ? "#0f172a" : "#ffffff",
+          scale: Math.min(window.devicePixelRatio || 1, 2),
+          logging: false,
+          useCORS: true,
+        });
+        const dataUrl = canvas.toDataURL("image/png");
+        if (!dataUrl.startsWith("data:image/png")) throw new Error("Screenshot canvas could not be encoded as PNG.");
+        setScreenshotDataUrl(dataUrl);
+
+        const link = document.createElement("a");
+        link.href = dataUrl;
+        link.download = `${screenshotFileName}.png`;
+        link.style.display = "none";
+        document.body.appendChild(link);
+        link.click();
+        window.setTimeout(() => {
+          link.remove();
+        }, 5000);
+      } catch (error) {
+        console.error("Screenshot capture failed", error);
+      }
+    };
+
+    onScreenshotReady(captureScreenshot);
+    return () => onScreenshotReady(null);
+  }, [onScreenshotReady, screenshotFileName, themeMode]);
 
   function handleChartKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     if (event.key !== " " && event.code !== "Space") return;
@@ -389,16 +440,29 @@ export function ChartPanel({
   }, [barTimes, timeMapping]);
 
   useEffect(() => {
-    markersRef.current?.setMarkers(toDisplayMarkers(buildExecutionMarkers(executions, timeframe), timeMapping.originalToDisplay));
-  }, [executions, timeframe, timeMapping]);
+    const chart = chartRef.current;
+    if (!chart || !markersRef.current) return;
+
+    const updateMarkers = () => {
+      const markers = toDisplayMarkers(buildExecutionMarkers(chartExecutions, timeframe), timeMapping.originalToDisplay);
+      // lightweight-charts only renders markers that are inside its current viewport.
+      // Keeping the complete mapped set here also avoids dropping markers when the
+      // library reports a fractional logical range during a viewport update.
+      markersRef.current?.setMarkers(markers);
+    };
+    const timeScale = chart.timeScale();
+    timeScale.subscribeVisibleLogicalRangeChange(updateMarkers);
+    updateMarkers();
+    return () => timeScale.unsubscribeVisibleLogicalRangeChange(updateMarkers);
+  }, [chartExecutions, timeframe, timeMapping]);
 
   useEffect(() => {
-    const visibleIds = new Set(buildExecutionMarkerLabels(executions, timeframe).map((label) => label.id));
+    const visibleIds = new Set(buildExecutionMarkerLabels(chartExecutions, timeframe, languageMode).map((label) => label.id));
     setExecutionLabelOffsets((current) => {
       const next = Object.fromEntries(Object.entries(current).filter(([id]) => visibleIds.has(id)));
       return Object.keys(next).length === Object.keys(current).length ? current : next;
     });
-  }, [executions, timeframe]);
+  }, [chartExecutions, languageMode, timeframe]);
 
   useEffect(() => {
     const chart = chartRef.current;
@@ -413,13 +477,21 @@ export function ChartPanel({
     const updateOverlays = () => {
       const bounds = container.getBoundingClientRect();
       const pricePaneHeight = chart.panes()[0]?.getHeight() ?? bounds.height;
+      const visibleLabels = toDisplayMarkerLabels(
+        buildExecutionMarkerLabels(chartExecutions, timeframe, languageMode),
+        timeMapping.originalToDisplay,
+      );
+      const visibleMarkers = toDisplayMarkers(
+        buildExecutionMarkers(chartExecutions, timeframe),
+        timeMapping.originalToDisplay,
+      );
       const labels = applyExecutionLabelOffsets(
         arrangeExecutionLabels(
-        toDisplayMarkerLabels(buildExecutionMarkerLabels(executions, timeframe), timeMapping.originalToDisplay)
+        visibleLabels
         .map((label, index): PositionedExecutionLabel | null => {
           const markerX = chart.timeScale().timeToCoordinate(label.time);
           const markerY = candleSeries.priceToCoordinate(label.price);
-          if (markerX == null || markerY == null) return null;
+          if (markerX == null || markerY == null || markerX < 0 || markerX > bounds.width) return null;
 
           const estimatedWidth = Math.min(176, Math.max(78, label.text.length * 9 + 24));
           const labelX = Math.max(
@@ -453,11 +525,11 @@ export function ChartPanel({
         bounds.width,
         pricePaneHeight,
       );
-      const outlines = toDisplayMarkers(buildExecutionMarkers(executions, timeframe), timeMapping.originalToDisplay)
+      const outlines = visibleMarkers
         .map((marker): PositionedExecutionMarkerOutline | null => {
           const markerX = chart.timeScale().timeToCoordinate(marker.time);
           const markerY = "price" in marker && marker.price != null ? candleSeries.priceToCoordinate(marker.price) : null;
-          if (markerX == null || markerY == null) return null;
+          if (markerX == null || markerY == null || markerX < 0 || markerX > bounds.width) return null;
 
           const size = typeof marker.size === "number" && Number.isFinite(marker.size) ? marker.size : 1;
           return {
@@ -499,7 +571,7 @@ export function ChartPanel({
       container.removeEventListener("pointerup", scheduleUpdate);
       container.removeEventListener("wheel", handleWheel, { capture: true });
     };
-  }, [bars, executionLabelOffsets, executions, timeframe, timeMapping]);
+  }, [bars, chartExecutions, executionLabelOffsets, languageMode, timeframe, timeMapping]);
 
   return (
     <div
@@ -552,6 +624,16 @@ export function ChartPanel({
           {label.text}
         </span>
       ))}
+      {screenshotDataUrl ? (
+        <a
+          className="screenshot-download-link"
+          href={screenshotDataUrl}
+          download={`${screenshotFileName}.png`}
+        >
+          <Download size={14} />
+          {languageMode === "ja" ? "PNGを保存" : "Save PNG"}
+        </a>
+      ) : null}
       {bars.length > 0 ? (
         <div className="ma-legend">
           {indicatorLegendItems.map((item) => (
@@ -564,12 +646,18 @@ export function ChartPanel({
       ) : null}
       {bars.length === 0 ? (
         <div className="chart-empty">
-          <strong>CSVを読み込んでください</strong>
-          <span>データはブラウザ内だけで処理され、サーバーへ送信されません。</span>
+          <strong>{languageMode === "ja" ? "CSVを読み込んでください" : "Load a CSV file"}</strong>
+          <span>
+            {languageMode === "ja"
+              ? "データはブラウザ内だけで処理され、サーバーへ送信されません。"
+              : "Data is processed only in your browser and is not sent to a server."}
+          </span>
         </div>
       ) : null}
       {executionTimes.size > 0 ? (
-        <div className="chart-execution-note">約定履歴は右ペインに記録されます</div>
+        <div className="chart-execution-note">
+          {languageMode === "ja" ? "約定履歴は右ペインに記録されます" : "Executions are recorded in the right pane"}
+        </div>
       ) : null}
     </div>
   );
@@ -610,7 +698,7 @@ function toDisplayIndicatorPoints(
 
 function toDisplayMarkers(markers: SeriesMarker<Time>[], originalToDisplay: Map<number, UTCTimestamp>): SeriesMarker<Time>[] {
   return markers.reduce<SeriesMarker<Time>[]>((next, marker) => {
-    const displayTime = originalToDisplay.get(Number(marker.time));
+    const displayTime = resolveDisplayTime(Number(marker.time), originalToDisplay);
     if (displayTime != null) {
       next.push({ ...marker, time: displayTime } as SeriesMarker<Time>);
     }
@@ -623,12 +711,30 @@ function toDisplayMarkerLabels(
   originalToDisplay: Map<number, UTCTimestamp>,
 ): ExecutionMarkerLabel[] {
   return labels.reduce<ExecutionMarkerLabel[]>((next, label) => {
-    const displayTime = originalToDisplay.get(Number(label.time));
+    const displayTime = resolveDisplayTime(Number(label.time), originalToDisplay);
     if (displayTime != null) {
       next.push({ ...label, time: displayTime });
     }
     return next;
   }, []);
+}
+
+function resolveDisplayTime(originalTime: number, originalToDisplay: Map<number, UTCTimestamp>): UTCTimestamp | null {
+  const exact = originalToDisplay.get(originalTime);
+  if (exact != null) return exact;
+
+  const latestVisibleTime = Math.max(...originalToDisplay.keys());
+  if (originalTime > latestVisibleTime) return null;
+
+  let nearestTime: number | null = null;
+  let nearestDisplayTime: UTCTimestamp | null = null;
+  for (const [candidateTime, displayTime] of originalToDisplay) {
+    if (candidateTime <= originalTime && (nearestTime == null || candidateTime > nearestTime)) {
+      nearestTime = candidateTime;
+      nearestDisplayTime = displayTime;
+    }
+  }
+  return nearestDisplayTime;
 }
 
 function buildIndicatorSeries(
