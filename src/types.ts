@@ -5,6 +5,7 @@ export type TradeType = "cash" | "marginOpen" | "marginClose";
 export type OrderType = "market" | "limit";
 export type Timeframe = "1m" | "5m";
 export type ThemeMode = "light" | "dark";
+export type LanguageMode = "ja" | "en";
 export type IndicatorMode = "ma" | "bb";
 export type TickMode = "desktop" | "mobile";
 export type PositionProduct = "cash" | "margin";
@@ -56,6 +57,31 @@ export interface Execution {
   time: string;
   realizedPnl: number;
   note: string;
+  displayTime?: string;
+  displayPrice?: number;
+  displayAdjustment?: "matched-bar" | "clamped-to-bar";
+}
+
+export interface HistoricalTrade {
+  id: string;
+  symbolId?: string;
+  ticker: string;
+  companyName: string;
+  exchange: string;
+  orderNumber?: string;
+  algoOrderNumber?: string;
+  transaction: string;
+  side: Side;
+  tradeType: TradeType;
+  product: PositionProduct;
+  quantity: number;
+  price: number;
+  notional: number;
+  time: string;
+  date: string;
+  orderType: string;
+  status: string;
+  realizedPnl?: number;
 }
 
 export interface Position {
@@ -89,6 +115,9 @@ export interface PersistedSession {
   bollingerPeriod?: number;
   requestedDate?: string;
   themeMode?: ThemeMode;
+  languageMode?: LanguageMode;
+  historicalTrades?: HistoricalTrade[];
+  showHistoricalTrades?: boolean;
   trading: TradingState;
   symbols: SymbolData[];
   savedAt: string;

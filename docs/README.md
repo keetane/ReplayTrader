@@ -6,6 +6,8 @@
 
 ## 公開向け文書
 
+- [English README and tutorial](../README.en.md)
+- [English user tutorial](./user-tutorial.en.md)
 - [免責事項](./disclaimer.md)
 - [利用規約](./terms.md)
 - [プライバシーポリシー](./privacy-policy.md)

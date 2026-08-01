@@ -1,26 +1,30 @@
-import { type DragEvent, type PointerEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type DragEvent, type PointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeftToLine,
   BarChart3,
+  Camera,
   CalendarDays,
   ClipboardList,
-  Database,
   FileUp,
+  Languages,
+  Menu,
   Moon,
   Pause,
   Play,
   RotateCcw,
   Save,
-  ShieldCheck,
   SkipBack,
   SkipForward,
   Sun,
+  Eye,
+  EyeOff,
   X,
 } from "lucide-react";
 import { ChartPanel } from "./components/ChartPanel";
 import { filterBarsByDate, filterBarsFromDateLookback, prepareBarsForTimeframe, resolveRequestedDate } from "./lib/bars";
-import { buildSyntheticCsv, CsvParseError, parseCsvText, summarizeSymbol } from "./lib/csv";
-import { formatPercent, formatPrice, formatSignedYen, formatVolume, formatYen } from "./lib/format";
+import { buildSyntheticCsv, CsvParseError, parseCsvText } from "./lib/csv";
+import { decodeTradeHistory, historicalTradeMatchesSymbol, parseTradeHistoryText, TradeHistoryParseError } from "./lib/tradeHistory";
+import { formatPercent, formatPrice, formatVolume } from "./lib/format";
 import {
   clampToTseTick,
   getIntrabarDisplayVolume,
@@ -47,7 +51,9 @@ import {
 } from "./lib/trading";
 import type {
   Bar,
+  HistoricalTrade,
   IndicatorMode,
+  LanguageMode,
   PersistedSession,
   PositionProduct,
   Side,
@@ -65,13 +71,274 @@ const MA_PERIODS: [number, number, number] = [5, 25, 60];
 const BOLLINGER_PERIOD_OPTIONS = [10, 20, 25, 50, 75];
 const INITIAL_CASH_OPTIONS = [500_000, 1_000_000, 3_000_000, 5_000_000, 10_000_000];
 const LOT_SIZE = 100;
-const CHART_LOOKBACK_DAYS = 2;
+const CHART_LOOKBACK_DAYS = 7;
 const EMPTY_POSITION_PNL_SUMMARY = { buy: 0, sell: 0, total: 0 };
 const ORDER_PANEL_WIDTH = 420;
 const ORDER_PANEL_MAX_HEIGHT = 760;
 const ORDER_PANEL_MARGIN = 12;
 type OrderMode = "normal" | "ifdoco";
 type IfdEntryTradeType = "cash" | "marginOpen";
+
+const UI_TEXT = {
+  ja: {
+    initialMessage: "CSVを選択するか、架空サンプルを生成してください。",
+    brandSubtitle: "ローカルCSV専用・サーバー送信なし・すべて仮想取引",
+    languageToggle: "English",
+    themeToDark: "ダーク",
+    themeToLight: "ライト",
+    csvTitle: "CSV読込",
+    chooseCsv: "分足CSV",
+    csvHint: "1分足 OHLCV / 複数選択可 / ドラッグ&ドロップ可",
+    openSymbolDrawer: "銘柄メニューを開く",
+    closeSymbolDrawer: "銘柄メニューを閉じる",
+    closeDrawerBackdrop: "銘柄メニューの外側を閉じる",
+    tradeHistoryTitle: "実約定履歴",
+    showHistoricalTrades: "実約定を表示",
+    hideHistoricalTrades: "実約定を非表示",
+    chooseTradeHistory: "約定履歴CSV",
+    tradeHistoryHint: "約定済みのみをチャートへ表示 / Shift-JIS対応",
+    noHistoricalTrades: "実約定履歴はありません。",
+    historicalTradeCount: "実約定",
+    excludedTradeCount: "除外",
+    historicalTimeNote: "CSVの注文日時を約定表示時刻として使用",
+    generateSample: "架空サンプルを生成",
+    dateTitle: "日付指定",
+    replayDate: "リプレイ日",
+    clearDate: "未指定に戻す",
+    symbolList: "銘柄一覧",
+    noSymbols: "読み込み済みCSVはありません。",
+    previousChange: "前日比",
+    rows: "行",
+    dataInfo: "データ情報",
+    period: "期間",
+    barType: "足種",
+    displayDate: "表示日",
+    storage: "保存",
+    oneMinute: "1分",
+    fiveMinutes: "5分",
+    oneMinuteBars: "1分足",
+    fiveMinuteBars: "5分足",
+    csvNotSelected: "CSV未選択",
+    loadCsvInBrowser: "CSVをブラウザ内で読み込んでください",
+    dailyOpen: "当日始",
+    dailyHigh: "当日高",
+    dailyLow: "当日安",
+    open: "始",
+    high: "高",
+    low: "安",
+    close: "終",
+    volume: "出来高",
+    tick: "Tick",
+    desktop: "PC",
+    mobile: "スマホ",
+    timeframe: "時間足",
+    indicator: "指標",
+    playbackPosition: "リプレイ位置",
+    pause: "一時停止",
+    play: "再生",
+  first: "先頭へ",
+  previous: "前へ",
+  next: "次へ",
+  last: "末尾へ",
+    speed: "再生速度",
+    save: "保存",
+    restore: "復元",
+    clear: "クリア",
+    virtualOrder: "仮想注文",
+    orderNotice: "トレーニング用の紙トレードです。実際の注文は発注されません。",
+    openOrderPanel: "注文パネル",
+    screenshot: "チャートをスクショ保存",
+    currentPrice: "現在値",
+    pendingIfdoco: "IFDOCO待機",
+    accountSummary: "口座サマリー",
+    initialCash: "初期資金",
+    virtualCapital: "仮想資金",
+    cashBalance: "現金残高",
+    cashMarketValue: "現物評価額",
+    longPositionPnl: "買い建玉損益",
+    shortPositionPnl: "売り建玉損益",
+    totalPositionPnl: "建玉損益合計",
+    realizedPnl: "確定損益",
+    totalPnl: "トータル損益",
+    marginExposure: "信用建玉評価額",
+    marginBuyingPower: "信用建余力",
+    maintenanceRatio: "信用維持率",
+    accountValue: "評価額",
+    marginNote: "信用建余力は現金残高を保証金、委託保証金率30%として簡易計算します。手数料・金利は計算対象外です。",
+    positions: "建玉",
+    symbol: "銘柄",
+    product: "種別",
+    type: "区分",
+    quantity: "数量",
+    entryPrice: "建値",
+    pnl: "損益",
+    openedDate: "建日",
+    noPositions: "建玉はありません。",
+    cash: "現物",
+    margin: "信用",
+    executions: "約定履歴",
+    time: "時刻",
+    side: "売買",
+    price: "価格",
+    noExecutions: "履歴はありません。",
+    buy: "買",
+    sell: "売",
+    orderDialogDescription: "通常注文とIFDOCOを紙トレードとして記録します。",
+    closeDialog: "閉じる",
+    orderMethod: "注文方式",
+    normalOrder: "通常注文",
+    tradeType: "取引区分",
+    cashTrade: "現物",
+    marginOpen: "信用新規",
+    marginClose: "信用返済",
+    market: "成行",
+    limit: "指値",
+    limitPrice: "指値価格",
+    setCurrentPrice: "現在値",
+    buyOrder: "買い注文",
+    sellOrder: "売り注文",
+    entryType: "新規区分",
+    cashBuy: "現物買い",
+    entryLimit: "新規指値",
+    targetPrice: "利確価格",
+    stopPrice: "損切価格",
+    ifdocoNote: "新規が現在バーで約定した場合にOCO返済を登録します。同一バーでの返済判定は行いません。",
+    buyIfdoco: "買いIFDOCO",
+    sellIfdoco: "売りIFDOCO",
+    footerData: "データソース: ユーザー選択CSVのみ",
+    footerAdvice: "投資判断は提供しません",
+    footerLimits: "約定・手数料・税金・信用規制を保証しません",
+  },
+  en: {
+    initialMessage: "Choose a CSV file or generate a sample.",
+    brandSubtitle: "Local CSV only · no server upload · paper trading only",
+    languageToggle: "日本語",
+    themeToDark: "Dark",
+    themeToLight: "Light",
+    csvTitle: "CSV Upload",
+    chooseCsv: "Bar CSV",
+    csvHint: "1-minute OHLCV / multiple files / drag & drop",
+    openSymbolDrawer: "Open symbol menu",
+    closeSymbolDrawer: "Close symbol menu",
+    closeDrawerBackdrop: "Close symbol menu backdrop",
+    tradeHistoryTitle: "Historical fills",
+    showHistoricalTrades: "Show historical fills",
+    hideHistoricalTrades: "Hide historical fills",
+    chooseTradeHistory: "Trade history CSV",
+    tradeHistoryHint: "Only confirmed fills are shown / Shift-JIS supported",
+    noHistoricalTrades: "No historical fills.",
+    historicalTradeCount: "fills",
+    excludedTradeCount: "excluded",
+    historicalTimeNote: "CSV order time is used as the fill display time",
+    generateSample: "Generate sample",
+    dateTitle: "Date",
+    replayDate: "Replay date",
+    clearDate: "Clear date",
+    symbolList: "Symbols",
+    noSymbols: "No CSV files loaded.",
+    previousChange: "Change",
+    rows: "rows",
+    dataInfo: "Data",
+    period: "Period",
+    barType: "Bar type",
+    displayDate: "Display date",
+    storage: "Storage",
+    oneMinute: "1m",
+    fiveMinutes: "5m",
+    oneMinuteBars: "1-minute bars",
+    fiveMinuteBars: "5-minute bars",
+    csvNotSelected: "No CSV selected",
+    loadCsvInBrowser: "Load a CSV file in your browser",
+    dailyOpen: "Open",
+    dailyHigh: "High",
+    dailyLow: "Low",
+    open: "O",
+    high: "H",
+    low: "L",
+    close: "C",
+    volume: "Volume",
+    tick: "Tick",
+    desktop: "Desktop",
+    mobile: "Mobile",
+    timeframe: "Timeframe",
+    indicator: "Indicator",
+    playbackPosition: "Replay position",
+    pause: "Pause",
+    play: "Play",
+  first: "First",
+  previous: "Previous",
+  next: "Next",
+  last: "Last",
+    speed: "Replay speed",
+    save: "Save",
+    restore: "Restore",
+    clear: "Clear",
+    virtualOrder: "Paper Order",
+    orderNotice: "Paper trading for training. No real orders are sent.",
+    openOrderPanel: "Order panel",
+    screenshot: "Save chart screenshot",
+    currentPrice: "Current",
+    pendingIfdoco: "IFDOCO pending",
+    accountSummary: "Account Summary",
+    initialCash: "Initial cash",
+    virtualCapital: "Virtual capital",
+    cashBalance: "Cash balance",
+    cashMarketValue: "Cash market value",
+    longPositionPnl: "Long position P/L",
+    shortPositionPnl: "Short position P/L",
+    totalPositionPnl: "Position P/L total",
+    realizedPnl: "Realized P/L",
+    totalPnl: "Total P/L",
+    marginExposure: "Margin exposure",
+    marginBuyingPower: "Margin buying power",
+    maintenanceRatio: "Maintenance ratio",
+    accountValue: "Account value",
+    marginNote: "Margin buying power is estimated from cash balance as collateral with a 30% margin requirement. Fees and interest are excluded.",
+    positions: "Positions",
+    symbol: "Symbol",
+    product: "Product",
+    type: "Type",
+    quantity: "Qty",
+    entryPrice: "Entry",
+    pnl: "P/L",
+    openedDate: "Opened",
+    noPositions: "No positions.",
+    cash: "Cash",
+    margin: "Margin",
+    executions: "Executions",
+    time: "Time",
+    side: "Side",
+    price: "Price",
+    noExecutions: "No executions.",
+    buy: "Buy",
+    sell: "Sell",
+    orderDialogDescription: "Record normal and IFDOCO orders as paper trades.",
+    closeDialog: "Close",
+    orderMethod: "Order method",
+    normalOrder: "Normal",
+    tradeType: "Trade type",
+    cashTrade: "Cash",
+    marginOpen: "Margin open",
+    marginClose: "Margin close",
+    market: "Market",
+    limit: "Limit",
+    limitPrice: "Limit price",
+    setCurrentPrice: "Current",
+    buyOrder: "Buy order",
+    sellOrder: "Sell order",
+    entryType: "Entry type",
+    cashBuy: "Cash buy",
+    entryLimit: "Entry limit",
+    targetPrice: "Take profit",
+    stopPrice: "Stop loss",
+    ifdocoNote: "If the entry fills in the current bar, OCO exit conditions are registered. Exit checks do not run in the same bar.",
+    buyIfdoco: "Buy IFDOCO",
+    sellIfdoco: "Sell IFDOCO",
+    footerData: "Data source: user-selected CSV only",
+    footerAdvice: "No investment decisions are provided",
+    footerLimits: "Executions, fees, taxes, and margin rules are not guaranteed",
+  },
+} as const satisfies Record<LanguageMode, Record<string, string>>;
 
 interface IntrabarWalkState {
   time: Bar["time"];
@@ -127,11 +394,14 @@ function App() {
   const [indicatorMode, setIndicatorMode] = useState<IndicatorMode>("ma");
   const [bollingerPeriod, setBollingerPeriod] = useState(25);
   const [themeMode, setThemeMode] = useState<ThemeMode>("dark");
+  const [languageMode, setLanguageMode] = useState<LanguageMode>("ja");
   const [replayIndex, setReplayIndex] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
   const [trading, setTrading] = useState<TradingState>(INITIAL_TRADING_STATE);
-  const [parseMessage, setParseMessage] = useState<string>("CSVを選択するか、架空サンプルを生成してください。");
+  const [historicalTrades, setHistoricalTrades] = useState<HistoricalTrade[]>([]);
+  const [showHistoricalTrades, setShowHistoricalTrades] = useState(true);
+  const [parseMessage, setParseMessage] = useState<string>(UI_TEXT.ja.initialMessage);
   const [tradeType, setTradeType] = useState<TradeType>("marginOpen");
   const [orderType, setOrderType] = useState<"market" | "limit">("market");
   const [quantity, setQuantity] = useState(100);
@@ -150,10 +420,19 @@ function App() {
   const [pendingOcoOrders, setPendingOcoOrders] = useState<PendingOcoOrder[]>([]);
   const [walkState, setWalkState] = useState<IntrabarWalkState | null>(null);
   const [isCsvDragging, setIsCsvDragging] = useState(false);
+  const [isTradeHistoryDragging, setIsTradeHistoryDragging] = useState(false);
+  const [isSymbolDrawerOpen, setIsSymbolDrawerOpen] = useState(false);
+  const chartScreenshotRef = useRef<(() => Promise<void>) | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const tradeHistoryInputRef = useRef<HTMLInputElement | null>(null);
   const orderOpenButtonRef = useRef<HTMLButtonElement | null>(null);
   const orderPanelDragRef = useRef<DragPanelState | null>(null);
   const orderPanelDragCleanupRef = useRef<(() => void) | null>(null);
+  const ui = UI_TEXT[languageMode];
+  const locale = languageMode === "ja" ? "ja-JP" : "en-US";
+  const registerChartScreenshot = useCallback((handler: (() => Promise<void>) | null) => {
+    chartScreenshotRef.current = handler;
+  }, []);
 
   const selectedSymbol = symbols.find((symbol) => symbol.id === selectedSymbolId);
   const resolvedDate = useMemo(
@@ -199,7 +478,17 @@ function App() {
   const marginBuyingPower = evaluateMarginBuyingPower(trading.cash, marginExposure);
   const chartViewportKey = `${selectedSymbolId ?? "none"}:${resolvedDate.activeDate ?? "none"}:${timeframe}:${indicatorMode}:${bollingerPeriod}`;
 
-  const selectedSummary = useMemo(() => (selectedSymbol ? summarizeSymbol(selectedSymbol) : "-"), [selectedSymbol]);
+  const selectedHistoricalSymbol = useMemo(
+    () => symbols.find((symbol) => symbol.id === selectedSymbolId),
+    [selectedSymbolId, symbols],
+  );
+  const visibleHistoricalTrades = useMemo(() => {
+    if (!showHistoricalTrades || !selectedHistoricalSymbol || currentTime == null) return [];
+    const currentBarEnd = Number(currentTime) + getTimeframeDurationMs(timeframe) / 1000 - 1;
+    return historicalTrades.filter(
+      (trade) => historicalTradeMatchesSymbol(trade, selectedHistoricalSymbol, resolvedDate.activeDate) && historicalTradeTimestamp(trade) <= currentBarEnd,
+    );
+  }, [currentTime, historicalTrades, resolvedDate.activeDate, selectedHistoricalSymbol, showHistoricalTrades, timeframe]);
 
   useEffect(() => {
     if (!playing || !currentBar || bars.length === 0) {
@@ -284,14 +573,18 @@ function App() {
             replayIndex: currentIndex,
           }),
         );
-        triggeredMessages.push(`IFDOCOのOCO返済を約定しました: ${formatPrice(triggerPrice)}`);
+        triggeredMessages.push(
+          languageMode === "ja"
+            ? `IFDOCOのOCO返済を約定しました: ${formatPrice(triggerPrice)}`
+            : `IFDOCO OCO exit filled: ${formatPrice(triggerPrice)}`,
+        );
       }
       return remaining;
     });
     if (triggeredMessages.length > 0) {
       setParseMessage(triggeredMessages.join("\n"));
     }
-  }, [currentBar, currentIndex, selectedSymbolId]);
+  }, [currentBar, currentIndex, languageMode, selectedSymbolId]);
 
   useEffect(() => {
     if (bars.length > 0 && replayIndex > bars.length - 1) {
@@ -316,16 +609,30 @@ function App() {
         const text = await file.text();
         const result = parseCsvText(text, file.name);
         loaded.push(result.symbol);
-        messages.push(`${file.name}: ${result.symbol.bars.length.toLocaleString("ja-JP")} 本を読み込みました。`);
+        messages.push(
+          languageMode === "ja"
+            ? `${file.name}: ${result.symbol.bars.length.toLocaleString(locale)} 本を読み込みました。`
+            : `${file.name}: loaded ${result.symbol.bars.length.toLocaleString(locale)} bars.`,
+        );
       } catch (error) {
-        const message = error instanceof CsvParseError ? error.message : "CSVの読み込みに失敗しました。";
+        const message =
+          error instanceof CsvParseError
+            ? translateCsvParseMessage(error.message, languageMode)
+            : languageMode === "ja"
+              ? "CSVの読み込みに失敗しました。"
+              : "Failed to load CSV.";
         messages.push(`${file.name}: ${message}`);
       }
     }
 
     if (loaded.length > 0) {
-      setSymbols((current) => mergeSymbols(current, loaded));
-      setSelectedSymbolId((current) => current ?? loaded[0]?.id);
+      const mergedSymbols = mergeSymbols(symbols, loaded);
+      setSymbols(mergedSymbols);
+      const refreshedSymbolId = mergedSymbols.find((symbol) => loaded.some((item) => item.fileName === symbol.fileName))?.id;
+      setSelectedSymbolId((current) => {
+        if (current && mergedSymbols.some((symbol) => symbol.id === current)) return current;
+        return refreshedSymbolId ?? current ?? loaded[0]?.id;
+      });
       setRequestedDate("");
       setReplayIndex(0);
       setPlaying(false);
@@ -333,6 +640,52 @@ function App() {
 
     setParseMessage(messages.join("\n"));
     if (inputRef.current) inputRef.current.value = "";
+  }
+
+  async function handleTradeHistoryFiles(files: FileList | null) {
+    if (!files || files.length === 0) return;
+
+    const messages: string[] = [];
+    const loaded: HistoricalTrade[] = [];
+    for (const file of Array.from(files)) {
+      try {
+        const text = decodeTradeHistory(await file.arrayBuffer());
+        const result = parseTradeHistoryText(text, file.name);
+        loaded.push(...result.trades);
+        messages.push(
+          languageMode === "ja"
+            ? `${file.name}: ${result.trades.length.toLocaleString(locale)}件の約定を読み込み、${result.excludedRows.toLocaleString(locale)}件を除外しました。`
+            : `${file.name}: loaded ${result.trades.length.toLocaleString(locale)} fills and excluded ${result.excludedRows.toLocaleString(locale)} rows.`,
+        );
+        if (result.warnings.length > 0) messages.push(...result.warnings);
+      } catch (error) {
+        const message =
+          error instanceof TradeHistoryParseError
+            ? error.message
+            : languageMode === "ja"
+              ? "取引履歴CSVの読み込みに失敗しました。"
+              : "Failed to load trade history CSV.";
+        messages.push(`${file.name}: ${message}`);
+      }
+    }
+
+    if (loaded.length > 0) {
+      setHistoricalTrades((current) => mergeHistoricalTrades(current, loaded));
+    }
+    setParseMessage(messages.join("\n"));
+    if (tradeHistoryInputRef.current) tradeHistoryInputRef.current.value = "";
+  }
+
+  function handleTradeHistoryDragOver(event: DragEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setIsTradeHistoryDragging(true);
+  }
+
+  function handleTradeHistoryDrop(event: DragEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    setIsTradeHistoryDragging(false);
+    void handleTradeHistoryFiles(event.dataTransfer.files);
   }
 
   function handleCsvDragOver(event: DragEvent<HTMLButtonElement>) {
@@ -354,7 +707,11 @@ function App() {
     setRequestedDate("");
     setReplayIndex(0);
     setPlaying(false);
-    setParseMessage("半導体株風の架空サンプルを生成しました。実在相場データではありません。");
+    setParseMessage(
+      languageMode === "ja"
+        ? "半導体株風の架空サンプルを生成しました。実在相場データではありません。"
+        : "Generated a synthetic semiconductor-style sample. This is not real market data.",
+    );
   }
 
   async function persistSession() {
@@ -369,18 +726,25 @@ function App() {
       bollingerPeriod,
       requestedDate,
       themeMode,
+      languageMode,
+      historicalTrades,
+      showHistoricalTrades,
       trading,
       symbols,
       savedAt: new Date().toISOString(),
     };
     await saveSession(session);
-    setParseMessage("IndexedDBにローカル保存しました。外部送信はしていません。");
+    setParseMessage(
+      languageMode === "ja"
+        ? "IndexedDBにローカル保存しました。外部送信はしていません。"
+        : "Saved locally to IndexedDB. Nothing was sent externally.",
+    );
   }
 
   async function restoreSession() {
     const session = await loadSession();
     if (!session) {
-      setParseMessage("保存済みセッションがありません。");
+      setParseMessage(languageMode === "ja" ? "保存済みセッションがありません。" : "No saved session found.");
       return;
     }
     setSymbols(session.symbols);
@@ -393,17 +757,30 @@ function App() {
     setBollingerPeriod(session.bollingerPeriod ?? 25);
     setRequestedDate(session.requestedDate ?? "");
     setThemeMode(session.themeMode ?? "dark");
+    const restoredLanguageMode = session.languageMode ?? "ja";
+    setLanguageMode(restoredLanguageMode);
+    setHistoricalTrades(session.historicalTrades ?? []);
+    setShowHistoricalTrades(session.showHistoricalTrades ?? true);
     setTrading(normalizeTradingState(session.trading));
     setPlaying(false);
-    setParseMessage(`セッションを復元しました: ${new Date(session.savedAt).toLocaleString("ja-JP")}`);
+    setParseMessage(
+      restoredLanguageMode === "ja"
+        ? `セッションを復元しました: ${new Date(session.savedAt).toLocaleString("ja-JP")}`
+        : `Session restored: ${new Date(session.savedAt).toLocaleString("en-US")}`,
+    );
   }
 
   async function resetAll() {
     setPlaying(false);
     setReplayIndex(0);
     setTrading({ ...INITIAL_TRADING_STATE, orders: [], executions: [], positions: [] });
+    setHistoricalTrades([]);
     await clearSession();
-    setParseMessage("仮想取引と保存セッションをクリアしました。読み込み済みCSVは画面上に残しています。");
+    setParseMessage(
+      languageMode === "ja"
+        ? "仮想取引と保存セッションをクリアしました。読み込み済みCSVは画面上に残しています。"
+        : "Cleared paper trades and the saved session. Loaded CSV data remains on screen.",
+    );
   }
 
   function setPriceToCurrent(setter: (value: string) => void) {
@@ -422,7 +799,11 @@ function App() {
 
   function placeOrder(orderSide: Side) {
     if (!selectedSymbol || !currentBar) {
-      setParseMessage("注文前にCSVを読み込んでリプレイ位置を選択してください。");
+      setParseMessage(
+        languageMode === "ja"
+          ? "注文前にCSVを読み込んでリプレイ位置を選択してください。"
+          : "Load a CSV file and select a replay position before ordering.",
+      );
       return;
     }
 
@@ -445,9 +826,13 @@ function App() {
       });
       const latestOrder = next.orders[0];
       if (latestOrder?.status === "rejected") {
-        setParseMessage(`注文を拒否しました: ${latestOrder.message ?? "条件を確認してください。"}`);
+        setParseMessage(
+          languageMode === "ja"
+            ? `注文を拒否しました: ${latestOrder.message ?? "条件を確認してください。"}`
+            : `Order rejected: ${translateOrderMessage(latestOrder.message, languageMode)}`,
+        );
       } else {
-        setParseMessage("仮想注文を約定しました。実注文ではありません。");
+        setParseMessage(languageMode === "ja" ? "仮想注文を約定しました。実注文ではありません。" : "Paper order filled. This is not a real order.");
       }
       return next;
     });
@@ -455,11 +840,15 @@ function App() {
 
   function placeIfdOco(entrySide: Side) {
     if (!selectedSymbol || !currentBar) {
-      setParseMessage("注文前にCSVを読み込んでリプレイ位置を選択してください。");
+      setParseMessage(
+        languageMode === "ja"
+          ? "注文前にCSVを読み込んでリプレイ位置を選択してください。"
+          : "Load a CSV file and select a replay position before ordering.",
+      );
       return;
     }
     if (ifdTradeType === "cash" && entrySide === "sell") {
-      setParseMessage("現物のIFDOCOは買い新規のみ対応しています。");
+      setParseMessage(languageMode === "ja" ? "現物のIFDOCOは買い新規のみ対応しています。" : "Cash IFDOCO supports buy entries only.");
       return;
     }
 
@@ -471,15 +860,27 @@ function App() {
     setIfdQuantity(normalizedQuantity);
 
     if (![entryReferencePrice, targetPrice, stopPrice].every(Number.isFinite)) {
-      setParseMessage("IFDOCOの新規価格、利確価格、損切価格を確認してください。");
+      setParseMessage(
+        languageMode === "ja"
+          ? "IFDOCOの新規価格、利確価格、損切価格を確認してください。"
+          : "Check the IFDOCO entry, take-profit, and stop-loss prices.",
+      );
       return;
     }
     if (entrySide === "buy" && !(targetPrice > entryReferencePrice && stopPrice < entryReferencePrice)) {
-      setParseMessage("買いIFDOCOは利確価格を新規価格より上、損切価格を新規価格より下にしてください。");
+      setParseMessage(
+        languageMode === "ja"
+          ? "買いIFDOCOは利確価格を新規価格より上、損切価格を新規価格より下にしてください。"
+          : "For a buy IFDOCO, set take profit above the entry and stop loss below it.",
+      );
       return;
     }
     if (entrySide === "sell" && !(targetPrice < entryReferencePrice && stopPrice > entryReferencePrice)) {
-      setParseMessage("売りIFDOCOは利確価格を新規価格より下、損切価格を新規価格より上にしてください。");
+      setParseMessage(
+        languageMode === "ja"
+          ? "売りIFDOCOは利確価格を新規価格より下、損切価格を新規価格より上にしてください。"
+          : "For a sell IFDOCO, set take profit below the entry and stop loss above it.",
+      );
       return;
     }
 
@@ -501,7 +902,11 @@ function App() {
     const latestOrder = next.orders[0];
     const latestExecution = next.executions[0];
     if (latestOrder?.status === "rejected" || latestExecution == null) {
-      setParseMessage(`IFDOCO新規注文を拒否しました: ${latestOrder?.message ?? "条件を確認してください。"}`);
+      setParseMessage(
+        languageMode === "ja"
+          ? `IFDOCO新規注文を拒否しました: ${latestOrder?.message ?? "条件を確認してください。"}`
+          : `IFDOCO entry rejected: ${translateOrderMessage(latestOrder?.message, languageMode)}`,
+      );
       return;
     }
 
@@ -520,7 +925,11 @@ function App() {
       },
       ...currentOco,
     ]);
-    setParseMessage("IFDOCO新規注文が約定し、OCO返済条件を登録しました。実注文ではありません。");
+    setParseMessage(
+      languageMode === "ja"
+        ? "IFDOCO新規注文が約定し、OCO返済条件を登録しました。実注文ではありません。"
+        : "IFDOCO entry filled and OCO exit conditions were registered. This is not a real order.",
+    );
   }
 
   function openOrderPanel() {
@@ -578,95 +987,141 @@ function App() {
           </span>
           <div>
             <h1>Replay Trader</h1>
-            <p>ローカルCSV専用・サーバー送信なし・すべて仮想取引</p>
+            <p>{ui.brandSubtitle}</p>
           </div>
         </div>
-        <div className="top-status">
+        <div className="top-actions">
           <button
-            className="theme-toggle"
+            className={`header-file-button bars-upload-button ${isCsvDragging ? "dragging" : ""}`}
             type="button"
-            onClick={() => setThemeMode((value) => (value === "light" ? "dark" : "light"))}
+            onClick={() => inputRef.current?.click()}
+            onDragEnter={handleCsvDragOver}
+            onDragOver={handleCsvDragOver}
+            onDragLeave={() => setIsCsvDragging(false)}
+            onDrop={handleCsvDrop}
+            title={ui.csvHint}
           >
-            {themeMode === "light" ? <Moon size={16} /> : <Sun size={16} />}
-            {themeMode === "light" ? "ダーク" : "ライト"}
+            <FileUp size={15} />
+            {ui.chooseCsv}
           </button>
-          <span>
-            <ShieldCheck size={16} />
-            投資助言なし
-          </span>
-          <span>
-            <Database size={16} />
-            ブラウザ内処理
-          </span>
+          <input
+            ref={inputRef}
+            className="sr-only"
+            type="file"
+            accept=".csv,text/csv"
+            multiple
+            onChange={(event) => void handleFiles(event.currentTarget.files)}
+          />
+          <button
+            className={`header-file-button trade-history-upload-button ${isTradeHistoryDragging ? "dragging" : ""}`}
+            type="button"
+            onClick={() => tradeHistoryInputRef.current?.click()}
+            onDragEnter={handleTradeHistoryDragOver}
+            onDragOver={handleTradeHistoryDragOver}
+            onDragLeave={() => setIsTradeHistoryDragging(false)}
+            onDrop={handleTradeHistoryDrop}
+            title={ui.tradeHistoryHint}
+          >
+            <ClipboardList size={15} />
+            {ui.chooseTradeHistory}
+          </button>
+          <input
+            ref={tradeHistoryInputRef}
+            className="sr-only"
+            type="file"
+            accept=".csv,text/csv"
+            multiple
+            onChange={(event) => void handleTradeHistoryFiles(event.currentTarget.files)}
+          />
+          <button
+            className="icon-button history-visibility-button"
+            type="button"
+            aria-label={showHistoricalTrades ? ui.hideHistoricalTrades : ui.showHistoricalTrades}
+            title={showHistoricalTrades ? ui.hideHistoricalTrades : ui.showHistoricalTrades}
+            onClick={() => setShowHistoricalTrades((value) => !value)}
+          >
+            {showHistoricalTrades ? <Eye size={17} /> : <EyeOff size={17} />}
+          </button>
+          <button ref={orderOpenButtonRef} className="primary-button header-order-button" type="button" onClick={openOrderPanel}>
+            <ClipboardList size={15} />
+            {ui.openOrderPanel}
+          </button>
+          <button
+            className="icon-button screenshot-button"
+            type="button"
+            aria-label={ui.screenshot}
+            title={ui.screenshot}
+            disabled={visibleBars.length === 0}
+            onClick={() => {
+              const captureScreenshot = chartScreenshotRef.current;
+              if (!captureScreenshot) {
+                console.error("Screenshot handler is not ready");
+                return;
+              }
+              void captureScreenshot();
+            }}
+          >
+            <Camera size={17} />
+          </button>
+          <button
+            className="icon-button drawer-toggle"
+            type="button"
+            aria-label={ui.openSymbolDrawer}
+            title={ui.openSymbolDrawer}
+            onClick={() => setIsSymbolDrawerOpen(true)}
+          >
+            <Menu size={18} />
+          </button>
         </div>
       </header>
 
-      <section className="workspace">
-        <aside className="left-panel panel">
-          <section className="panel-section">
-            <h2>CSV読込</h2>
-            <button
-              className={`file-drop ${isCsvDragging ? "dragging" : ""}`}
-              type="button"
-              onClick={() => inputRef.current?.click()}
-              onDragEnter={handleCsvDragOver}
-              onDragOver={handleCsvDragOver}
-              onDragLeave={() => setIsCsvDragging(false)}
-              onDrop={handleCsvDrop}
-            >
-              <FileUp size={28} />
-              <strong>CSVファイルを選択</strong>
-              <span>1分足 OHLCV / 複数選択可 / ドラッグ&ドロップ可</span>
-            </button>
-            <input
-              ref={inputRef}
-              className="sr-only"
-              type="file"
-              accept=".csv,text/csv"
-              multiple
-              onChange={(event) => void handleFiles(event.currentTarget.files)}
-            />
-            <button className="secondary-button" type="button" onClick={addSyntheticSample}>
-              架空サンプルを生成
-            </button>
-            <pre className="message-box">{parseMessage}</pre>
-          </section>
-
-          <section className="panel-section">
-            <h2>日付指定</h2>
-            <label className="date-field">
-              <span>
-                <CalendarDays size={15} />
-                リプレイ日
-              </span>
-              <input
-                type="text"
-                inputMode="numeric"
-                placeholder="YYYY-MM-DD"
-                value={requestedDate}
-                onChange={(event) => setRequestedDate(event.currentTarget.value)}
-              />
-            </label>
-            <button className="secondary-button" type="button" onClick={() => setRequestedDate("")}>
-              未指定に戻す
-            </button>
-            <p className="date-note">
-              {resolvedDate.activeDate
-                ? requestedDate
-                  ? resolvedDate.exact
-                    ? `指定日 ${resolvedDate.activeDate} を表示中`
-                    : `指定日にデータがないため、最も近い ${resolvedDate.activeDate} を表示中`
-                  : `未指定のため、今日に最も近い ${resolvedDate.activeDate} を表示中`
-                : selectedSymbol
-                  ? "YYYY-MM-DD形式で入力してください。"
-                  : "CSV読込後に日付を選択できます。"}
-            </p>
-          </section>
-
-          <section className="panel-section">
-            <h2>銘柄一覧</h2>
+      {isSymbolDrawerOpen ? (
+        <>
+          <button
+            className="drawer-backdrop"
+            type="button"
+            aria-label={ui.closeDrawerBackdrop}
+            onClick={() => setIsSymbolDrawerOpen(false)}
+          />
+          <aside className="symbol-drawer panel" aria-label={ui.symbolList}>
+            <div className="symbol-drawer-header">
+              <h2>{ui.symbolList}</h2>
+              <button
+                className="icon-button"
+                type="button"
+                aria-label={ui.closeSymbolDrawer}
+                title={ui.closeSymbolDrawer}
+                onClick={() => setIsSymbolDrawerOpen(false)}
+              >
+                <X size={17} />
+              </button>
+            </div>
+            <div className="drawer-controls">
+              <section className="drawer-section">
+                <h3>{ui.dateTitle}</h3>
+                <label className="date-field drawer-date-field">
+                  <span>
+                    <CalendarDays size={15} />
+                    {ui.replayDate}
+                  </span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    placeholder="YYYY-MM-DD"
+                    value={requestedDate}
+                    onChange={(event) => setRequestedDate(event.currentTarget.value)}
+                  />
+                </label>
+                <button className="secondary-button" type="button" onClick={() => setRequestedDate("")}>
+                  {ui.clearDate}
+                </button>
+                <p className="date-note">
+                  {formatDateNote(resolvedDate.activeDate, requestedDate, resolvedDate.exact, Boolean(selectedSymbol), languageMode)}
+                </p>
+              </section>
+            </div>
             <div className="symbol-list">
-              {symbols.length === 0 ? <p className="empty-text">読み込み済みCSVはありません。</p> : null}
+              {symbols.length === 0 ? <p className="empty-text">{ui.noSymbols}</p> : null}
               {symbols.map((symbol) => {
                 const openChange = calculateSymbolOpenChange(symbol, requestedDate);
                 return (
@@ -678,6 +1133,7 @@ function App() {
                       setSelectedSymbolId(symbol.id);
                       setReplayIndex(0);
                       setPlaying(false);
+                      setIsSymbolDrawerOpen(false);
                     }}
                   >
                     <span>
@@ -686,84 +1142,106 @@ function App() {
                     </span>
                     <span className="symbol-row-meta">
                       <small className={getOpenChangeClassName(openChange.change)}>
-                        前日比{" "}
+                        {ui.previousChange}{" "}
                         {openChange.change == null || openChange.changePercent == null
                           ? "-"
                           : `${formatSignedPrice(openChange.change)} (${formatSignedPercent(openChange.changePercent)})`}
                       </small>
-                      <b>{symbol.bars.length.toLocaleString("ja-JP")} 行</b>
+                      <b>
+                        {symbol.bars.length.toLocaleString(locale)} {ui.rows}
+                      </b>
                     </span>
                   </button>
                 );
               })}
             </div>
-          </section>
+            <section className="drawer-section drawer-sample">
+              <button className="secondary-button drawer-action" type="button" onClick={addSyntheticSample}>
+                {ui.generateSample}
+              </button>
+            </section>
+            <section className="drawer-section drawer-settings">
+              <h3>{languageMode === "ja" ? "各種モード" : "Modes"}</h3>
+              <button
+                className="theme-toggle drawer-action"
+                type="button"
+                onClick={() => setThemeMode((value) => (value === "light" ? "dark" : "light"))}
+              >
+                {themeMode === "light" ? <Moon size={16} /> : <Sun size={16} />}
+                {themeMode === "light" ? ui.themeToDark : ui.themeToLight}
+              </button>
+              <button
+                className="theme-toggle drawer-action"
+                type="button"
+                onClick={() => setLanguageMode((value) => (value === "ja" ? "en" : "ja"))}
+              >
+                <Languages size={16} />
+                {ui.languageToggle}
+              </button>
+            </section>
+          </aside>
+        </>
+      ) : null}
 
-          <section className="panel-section data-card">
-            <h2>データ情報</h2>
-            <dl>
-              <div>
-                <dt>期間</dt>
-                <dd>{selectedSummary}</dd>
-              </div>
-              <div>
-                <dt>足種</dt>
-                <dd>{timeframe === "1m" ? "1分足" : "5分足"}</dd>
-              </div>
-              <div>
-                <dt>表示日</dt>
-                <dd>{resolvedDate.activeDate ?? "-"}</dd>
-              </div>
-              <div>
-                <dt>保存</dt>
-                <dd>IndexedDB ローカル</dd>
-              </div>
-            </dl>
-          </section>
-        </aside>
-
+      <section className="workspace">
         <section className="center-panel">
           <div className="chart-header panel">
             <div>
-              <h2>{selectedSymbol?.id ?? "CSV未選択"}</h2>
-              <span>{displayDatetime ?? "CSVをブラウザ内で読み込んでください"}</span>
+              <h2>{selectedSymbol?.id ?? ui.csvNotSelected}</h2>
+              <span>{displayDatetime ?? ui.loadCsvInBrowser}</span>
             </div>
             <div className="chart-tools">
               <div className="daily-strip">
-                <span>当日始 {dailyMarketStats ? formatPrice(dailyMarketStats.open) : "-"}</span>
+                <span>
+                  {ui.dailyOpen} {dailyMarketStats ? formatPrice(dailyMarketStats.open) : "-"}
+                </span>
                 <span className={getChangeClassName("daily-change", dailyMarketStats?.change ?? null)}>
-                  前日比{" "}
+                  {ui.previousChange}{" "}
                   {dailyMarketStats?.change == null || dailyMarketStats.changePercent == null
                     ? "-"
                     : `${formatSignedPrice(dailyMarketStats.change)} (${formatSignedPercent(dailyMarketStats.changePercent)})`}
                 </span>
-                <span>当日高 {dailyMarketStats ? formatPrice(dailyMarketStats.high) : "-"}</span>
-                <span>当日安 {dailyMarketStats ? formatPrice(dailyMarketStats.low) : "-"}</span>
+                <span>
+                  {ui.dailyHigh} {dailyMarketStats ? formatPrice(dailyMarketStats.high) : "-"}
+                </span>
+                <span>
+                  {ui.dailyLow} {dailyMarketStats ? formatPrice(dailyMarketStats.low) : "-"}
+                </span>
               </div>
               <div className="ohlc-strip">
-                <span>始 {displayCurrentBar ? formatPrice(displayCurrentBar.open) : "-"}</span>
-                <span>高 {displayCurrentBar ? formatPrice(displayCurrentBar.high) : "-"}</span>
-                <span>安 {displayCurrentBar ? formatPrice(displayCurrentBar.low) : "-"}</span>
-                <span>終 {displayCurrentBar ? formatPrice(displayCurrentBar.close) : "-"}</span>
-                <span>出来高 {displayCurrentBar ? formatVolume(displayCurrentBar.volume) : "-"}</span>
+                <span>
+                  {ui.open} {displayCurrentBar ? formatPrice(displayCurrentBar.open) : "-"}
+                </span>
+                <span>
+                  {ui.high} {displayCurrentBar ? formatPrice(displayCurrentBar.high) : "-"}
+                </span>
+                <span>
+                  {ui.low} {displayCurrentBar ? formatPrice(displayCurrentBar.low) : "-"}
+                </span>
+                <span>
+                  {ui.close} {displayCurrentBar ? formatPrice(displayCurrentBar.close) : "-"}
+                </span>
+                <span>
+                  {ui.volume} {displayCurrentBar ? formatVolume(displayCurrentBar.volume) : "-"}
+                </span>
               </div>
               <div className="chart-picker-row">
                 <label className="timeframe-picker">
-                  <span>Tick</span>
+                  <span>{ui.tick}</span>
                   <select value={tickMode} onChange={(event) => setTickMode(event.currentTarget.value as TickMode)}>
-                    <option value="desktop">PC</option>
-                    <option value="mobile">スマホ</option>
+                    <option value="desktop">{ui.desktop}</option>
+                    <option value="mobile">{ui.mobile}</option>
                   </select>
                 </label>
                 <label className="timeframe-picker">
-                  <span>時間足</span>
+                  <span>{ui.timeframe}</span>
                   <select value={timeframe} onChange={(event) => setTimeframe(event.currentTarget.value as Timeframe)}>
-                    <option value="1m">1分</option>
-                    <option value="5m">5分</option>
+                    <option value="1m">{ui.oneMinute}</option>
+                    <option value="5m">{ui.fiveMinutes}</option>
                   </select>
                 </label>
                 <label className="timeframe-picker">
-                  <span>指標</span>
+                  <span>{ui.indicator}</span>
                   <select value={indicatorMode} onChange={(event) => setIndicatorMode(event.currentTarget.value as IndicatorMode)}>
                     <option value="ma">MA</option>
                     <option value="bb">BB</option>
@@ -771,7 +1249,7 @@ function App() {
                 </label>
                 {indicatorMode === "bb" ? (
                   <label className="timeframe-picker">
-                    <span>期間</span>
+                    <span>{ui.period}</span>
                     <select value={bollingerPeriod} onChange={(event) => setBollingerPeriod(Number(event.currentTarget.value))}>
                       {BOLLINGER_PERIOD_OPTIONS.map((period) => (
                         <option key={period} value={period}>
@@ -789,14 +1267,19 @@ function App() {
             bars={visibleBars}
             maSourceBars={visibleMaSourceBars}
             executions={trading.executions.filter((item) => item.symbol === selectedSymbolId)}
+            historicalTrades={visibleHistoricalTrades}
+            markerBars={chartBars}
             maPeriods={MA_PERIODS}
             indicatorMode={indicatorMode}
+            languageMode={languageMode}
             bollingerPeriod={bollingerPeriod}
             themeMode={themeMode}
             timeframe={timeframe}
             viewportKey={chartViewportKey}
             canTogglePlayback={bars.length > 0}
             onTogglePlayback={() => setPlaying((value) => !value)}
+            onScreenshotReady={registerChartScreenshot}
+            screenshotFileName={`ReplayTrader_${selectedSymbolId ?? "chart"}_${resolvedDate.activeDate ?? "undated"}`}
           />
 
           <div className="replay-panel panel">
@@ -806,7 +1289,7 @@ function App() {
                 <span>{displayDatetime?.split(" ")[1]?.slice(0, 8) ?? "--:--:--"}</span>
               </div>
               <input
-                aria-label="リプレイ位置"
+                aria-label={ui.playbackPosition}
                 type="range"
                 min={0}
                 max={Math.max(0, bars.length - 1)}
@@ -824,10 +1307,10 @@ function App() {
             <div className="control-row">
               <button type="button" className="primary-button" disabled={bars.length === 0} onClick={() => setPlaying((value) => !value)}>
                 {playing ? <Pause size={16} /> : <Play size={16} />}
-                {playing ? "一時停止" : "再生"}
+                {playing ? ui.pause : ui.play}
               </button>
               <IconButton
-                label="先頭へ"
+                label={ui.first}
                 onClick={() => {
                   setWalkState(null);
                   setReplayIndex(0);
@@ -837,7 +1320,7 @@ function App() {
                 <ArrowLeftToLine size={16} />
               </IconButton>
               <IconButton
-                label="前へ"
+                label={ui.previous}
                 onClick={() => {
                   setWalkState(null);
                   setReplayIndex((value) => Math.max(0, value - 1));
@@ -847,7 +1330,7 @@ function App() {
                 <SkipBack size={16} />
               </IconButton>
               <IconButton
-                label="次へ"
+                label={ui.next}
                 onClick={() => {
                   setWalkState(null);
                   setReplayIndex((value) => Math.min(bars.length - 1, value + 1));
@@ -856,7 +1339,18 @@ function App() {
               >
                 <SkipForward size={16} />
               </IconButton>
-              <div className="speed-group" aria-label="再生速度">
+              <IconButton
+                label={ui.last}
+                onClick={() => {
+                  setPlaying(false);
+                  setWalkState(null);
+                  setReplayIndex(Math.max(0, bars.length - 1));
+                }}
+                disabled={bars.length === 0 || currentIndex >= bars.length - 1}
+              >
+                <SkipForward size={16} />
+              </IconButton>
+              <div className="speed-group" aria-label={ui.speed}>
                 {SPEEDS.map((value) => (
                   <button className={speed === value ? "active" : ""} key={value} type="button" onClick={() => setSpeed(value)}>
                     {value}x
@@ -865,37 +1359,24 @@ function App() {
               </div>
               <button type="button" className="secondary-button compact" onClick={() => void persistSession()} disabled={symbols.length === 0}>
                 <Save size={15} />
-                保存
+                {ui.save}
               </button>
               <button type="button" className="secondary-button compact" onClick={() => void restoreSession()}>
-                復元
+                {ui.restore}
               </button>
               <button type="button" className="secondary-button compact danger" onClick={() => void resetAll()}>
                 <RotateCcw size={15} />
-                クリア
+                {ui.clear}
               </button>
             </div>
           </div>
         </section>
 
         <aside className="right-panel panel">
-          <section className="panel-section">
-            <h2>仮想注文</h2>
-            <p className="notice">トレーニング用の紙トレードです。実際の注文は発注されません。</p>
-            <button ref={orderOpenButtonRef} className="primary-button order-open-button" type="button" onClick={openOrderPanel}>
-              <ClipboardList size={16} />
-              注文パネルを開く
-            </button>
-            <div className="order-status-list">
-              <Metric label="現在値" value={displayCurrentBar ? formatPrice(displayCurrentBar.close) : "-"} />
-              <Metric label="IFDOCO待機" value={`${pendingOcoOrders.length.toLocaleString("ja-JP")} 件`} />
-            </div>
-          </section>
-
           <section className="panel-section summary-card">
-            <h2>口座サマリー</h2>
+            <h2>{ui.accountSummary}</h2>
             <label className="capital-field">
-              初期資金
+              {ui.initialCash}
               <select
                 value={trading.initialCash}
                 onChange={(event) => {
@@ -905,61 +1386,59 @@ function App() {
               >
                 {INITIAL_CASH_OPTIONS.map((cash) => (
                   <option key={cash} value={cash}>
-                    {formatYen(cash)}
+                    {formatCurrency(cash, languageMode)}
                   </option>
                 ))}
               </select>
             </label>
-            <Metric label="仮想資金" value={formatYen(trading.initialCash)} />
-            <Metric label="現金残高" value={formatYen(trading.cash)} />
-            <Metric label="現物評価額" value={formatYen(cashMarketValue)} />
-            <Metric label="買い建玉損益" value={formatSignedYen(positionPnlSummary.buy)} strong={positionPnlSummary.buy !== 0} />
-            <Metric label="売り建玉損益" value={formatSignedYen(positionPnlSummary.sell)} strong={positionPnlSummary.sell !== 0} />
-            <Metric label="建玉損益合計" value={formatSignedYen(positionPnlSummary.total)} strong={positionPnlSummary.total !== 0} />
-            <Metric label="確定損益" value={formatSignedYen(trading.realizedPnl)} strong={trading.realizedPnl !== 0} />
-            <Metric label="トータル損益" value={formatSignedYen(totalPnl)} strong={totalPnl !== 0} />
-            <Metric label="信用建玉評価額" value={formatYen(marginExposure)} />
-            <Metric label="信用建余力" value={formatYen(marginBuyingPower)} />
+            <Metric label={ui.virtualCapital} value={formatCurrency(trading.initialCash, languageMode)} />
+            <Metric label={ui.cashBalance} value={formatCurrency(trading.cash, languageMode)} />
+            <Metric label={ui.cashMarketValue} value={formatCurrency(cashMarketValue, languageMode)} />
+            <Metric label={ui.longPositionPnl} value={formatSignedCurrency(positionPnlSummary.buy, languageMode)} strong={positionPnlSummary.buy !== 0} />
+            <Metric label={ui.shortPositionPnl} value={formatSignedCurrency(positionPnlSummary.sell, languageMode)} strong={positionPnlSummary.sell !== 0} />
+            <Metric label={ui.totalPositionPnl} value={formatSignedCurrency(positionPnlSummary.total, languageMode)} strong={positionPnlSummary.total !== 0} />
+            <Metric label={ui.realizedPnl} value={formatSignedCurrency(trading.realizedPnl, languageMode)} strong={trading.realizedPnl !== 0} />
+            <Metric label={ui.totalPnl} value={formatSignedCurrency(totalPnl, languageMode)} strong={totalPnl !== 0} />
+            <Metric label={ui.marginExposure} value={formatCurrency(marginExposure, languageMode)} />
+            <Metric label={ui.marginBuyingPower} value={formatCurrency(marginBuyingPower, languageMode)} />
             <Metric
-              label="信用維持率"
+              label={ui.maintenanceRatio}
               value={maintenanceRatio == null ? "-" : formatPercent(maintenanceRatio)}
               strong={maintenanceRatio != null && maintenanceRatio < 30}
             />
-            <Metric label="評価額" value={formatYen(accountValue)} />
-            <p className="notice compact-notice">
-              信用建余力は現金残高を保証金、委託保証金率30%として簡易計算します。手数料・金利は計算対象外です。
-            </p>
+            <Metric label={ui.accountValue} value={formatCurrency(accountValue, languageMode)} />
+            <p className="notice compact-notice">{ui.marginNote}</p>
           </section>
 
           <section className="panel-section table-section">
-            <h2>建玉</h2>
+            <h2>{ui.positions}</h2>
             <table>
               <thead>
                 <tr>
-                  <th>銘柄</th>
-                  <th>種別</th>
-                  <th>区分</th>
-                  <th>数量</th>
-                  <th>建値</th>
-                  <th>損益</th>
-                  <th>建日</th>
+                  <th>{ui.symbol}</th>
+                  <th>{ui.product}</th>
+                  <th>{ui.type}</th>
+                  <th>{ui.quantity}</th>
+                  <th>{ui.entryPrice}</th>
+                  <th>{ui.pnl}</th>
+                  <th>{ui.openedDate}</th>
                 </tr>
               </thead>
               <tbody>
                 {trading.positions.length === 0 ? (
                   <tr>
-                    <td colSpan={7}>建玉はありません。</td>
+                    <td colSpan={7}>{ui.noPositions}</td>
                   </tr>
                 ) : (
                   trading.positions.map((position) => (
                     <tr key={position.id}>
                       <td>{position.symbol}</td>
-                      <td>{position.product === "cash" ? "現物" : "信用"}</td>
-                      <td>{formatPositionSide(position.product, position.side)}</td>
-                      <td>{position.quantity}</td>
+                      <td>{position.product === "cash" ? ui.cash : ui.margin}</td>
+                      <td>{formatPositionSide(position.product, position.side, languageMode)}</td>
+                      <td>{position.quantity.toLocaleString(locale)}</td>
                       <td>{formatPrice(position.entryPrice)}</td>
                       <td className={valuationPrice == null ? "" : "signed"}>
-                        {valuationPrice == null ? "-" : formatSignedYen(evaluatePositionUnrealizedPnl(position, valuationPrice))}
+                        {valuationPrice == null ? "-" : formatSignedCurrency(evaluatePositionUnrealizedPnl(position, valuationPrice), languageMode)}
                       </td>
                       <td>{position.openedDate}</td>
                     </tr>
@@ -970,28 +1449,65 @@ function App() {
           </section>
 
           <section className="panel-section table-section">
-            <h2>約定履歴</h2>
+            <h2>{ui.executions}</h2>
             <table>
               <thead>
                 <tr>
-                  <th>時刻</th>
-                  <th>売買</th>
-                  <th>数量</th>
-                  <th>価格</th>
+                  <th>{ui.time}</th>
+                  <th>{ui.side}</th>
+                  <th>{ui.quantity}</th>
+                  <th>{ui.price}</th>
                 </tr>
               </thead>
               <tbody>
                 {trading.executions.length === 0 ? (
                   <tr>
-                    <td colSpan={4}>履歴はありません。</td>
+                    <td colSpan={4}>{ui.noExecutions}</td>
                   </tr>
                 ) : (
                   trading.executions.slice(0, 7).map((execution) => (
                     <tr key={execution.id}>
                       <td>{execution.time.split(" ")[1]?.slice(0, 5)}</td>
-                      <td className={execution.side}>{execution.side === "buy" ? "買" : "売"}</td>
-                      <td>{execution.quantity}</td>
+                      <td className={execution.side}>{execution.side === "buy" ? ui.buy : ui.sell}</td>
+                      <td>{execution.quantity.toLocaleString(locale)}</td>
                       <td>{formatPrice(execution.price)}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </section>
+
+          <section className="panel-section table-section historical-trades-section">
+            <h2>{ui.tradeHistoryTitle}</h2>
+            <p className="notice compact-notice">{ui.historicalTimeNote}</p>
+            <table>
+              <thead>
+                <tr>
+                  <th>{ui.time}</th>
+                  <th>{ui.symbol}</th>
+                  <th>{ui.side}</th>
+                  <th>{ui.quantity}</th>
+                  <th>{ui.price}</th>
+                  <th>{ui.pnl}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleHistoricalTrades.length === 0 ? (
+                  <tr>
+                    <td colSpan={6}>{ui.noHistoricalTrades}</td>
+                  </tr>
+                ) : (
+                  [...visibleHistoricalTrades].reverse().slice(0, 20).map((trade) => (
+                    <tr key={trade.id}>
+                      <td>{trade.time.split(" ")[1]?.slice(0, 8)}</td>
+                      <td>{trade.companyName}</td>
+                      <td className={trade.side}>{formatHistoricalTradeLabel(trade, languageMode)}</td>
+                      <td>{trade.quantity.toLocaleString(locale)}</td>
+                      <td>{formatPrice(trade.price)}</td>
+                      <td className={trade.realizedPnl == null ? "" : "signed"}>
+                        {trade.realizedPnl == null ? "-" : formatSignedCurrency(trade.realizedPnl, languageMode)}
+                      </td>
                     </tr>
                   ))
                 )}
@@ -1006,7 +1522,7 @@ function App() {
           className="order-modal panel"
           role="dialog"
           aria-modal="false"
-          aria-label="仮想注文"
+          aria-label={ui.virtualOrder}
           style={{
             left: orderPanelPosition?.x ?? ORDER_PANEL_MARGIN,
             top: orderPanelPosition?.y ?? ORDER_PANEL_MARGIN,
@@ -1017,52 +1533,52 @@ function App() {
               onPointerDown={startOrderPanelDrag}
             >
               <div>
-                <h2>仮想注文</h2>
-                <p>通常注文とIFDOCOを紙トレードとして記録します。</p>
+                <h2>{ui.virtualOrder}</h2>
+                <p>{ui.orderDialogDescription}</p>
               </div>
               <button
                 className="icon-button"
                 type="button"
-                aria-label="閉じる"
+                aria-label={ui.closeDialog}
                 onPointerDown={(event) => event.stopPropagation()}
                 onClick={() => setIsOrderModalOpen(false)}
               >
                 <X size={17} />
               </button>
             </header>
-            <div className="order-mode-tabs" role="tablist" aria-label="注文方式">
+            <div className="order-mode-tabs" role="tablist" aria-label={ui.orderMethod}>
               <button className={orderMode === "normal" ? "active" : ""} type="button" onClick={() => setOrderMode("normal")}>
-                通常注文
+                {ui.normalOrder}
               </button>
               <button className={orderMode === "ifdoco" ? "active" : ""} type="button" onClick={() => setOrderMode("ifdoco")}>
                 IFDOCO
               </button>
             </div>
             <div className="order-modal-status">
-              <Metric label="現在値" value={displayCurrentBar ? formatPrice(displayCurrentBar.close) : "-"} />
-              <Metric label="IFDOCO待機" value={`${pendingOcoOrders.length.toLocaleString("ja-JP")} 件`} />
+              <Metric label={ui.currentPrice} value={displayCurrentBar ? formatPrice(displayCurrentBar.close) : "-"} />
+              <Metric label={ui.pendingIfdoco} value={formatCount(pendingOcoOrders.length, languageMode)} />
             </div>
 
             {orderMode === "normal" ? (
               <div className="order-form-grid">
                 <label>
-                  取引区分
+                  {ui.tradeType}
                   <select value={tradeType} onChange={(event) => setTradeType(event.currentTarget.value as TradeType)}>
-                    <option value="cash">現物</option>
-                    <option value="marginOpen">信用新規</option>
-                    <option value="marginClose">信用返済</option>
+                    <option value="cash">{ui.cashTrade}</option>
+                    <option value="marginOpen">{ui.marginOpen}</option>
+                    <option value="marginClose">{ui.marginClose}</option>
                   </select>
                 </label>
                 <div className="segmented">
                   <button className={orderType === "market" ? "active" : ""} type="button" onClick={() => setOrderType("market")}>
-                    成行
+                    {ui.market}
                   </button>
                   <button className={orderType === "limit" ? "active" : ""} type="button" onClick={() => setOrderType("limit")}>
-                    指値
+                    {ui.limit}
                   </button>
                 </div>
                 <label>
-                  数量
+                  {ui.quantity}
                   <input
                     min={LOT_SIZE}
                     step={LOT_SIZE}
@@ -1073,7 +1589,7 @@ function App() {
                   />
                 </label>
                 <label className="price-field">
-                  <span>指値価格</span>
+                  <span>{ui.limitPrice}</span>
                   <div className="price-input-row">
                     <input
                       disabled={orderType === "market"}
@@ -1087,11 +1603,11 @@ function App() {
                       disabled={orderType === "market" || !displayCurrentBar}
                       onClick={() => setPriceToCurrent(setLimitPrice)}
                     >
-                      現在値
+                      {ui.setCurrentPrice}
                     </button>
                     <button
                       type="button"
-                      aria-label="指値価格を1呼値下げる"
+                      aria-label={formatTickButtonLabel(ui.limitPrice, -1, languageMode)}
                       disabled={orderType === "market" || !displayCurrentBar}
                       onClick={() => movePriceByTick(limitPrice, setLimitPrice, -1)}
                     >
@@ -1099,7 +1615,7 @@ function App() {
                     </button>
                     <button
                       type="button"
-                      aria-label="指値価格を1呼値上げる"
+                      aria-label={formatTickButtonLabel(ui.limitPrice, 1, languageMode)}
                       disabled={orderType === "market" || !displayCurrentBar}
                       onClick={() => movePriceByTick(limitPrice, setLimitPrice, 1)}
                     >
@@ -1109,32 +1625,32 @@ function App() {
                 </label>
                 <div className="order-actions">
                   <button type="button" className="buy-button" onClick={() => placeOrder("buy")}>
-                    買い注文
+                    {ui.buyOrder}
                   </button>
                   <button type="button" className="sell-button" onClick={() => placeOrder("sell")}>
-                    売り注文
+                    {ui.sellOrder}
                   </button>
                 </div>
               </div>
             ) : (
               <div className="order-form-grid">
                 <label>
-                  新規区分
+                  {ui.entryType}
                   <select value={ifdTradeType} onChange={(event) => setIfdTradeType(event.currentTarget.value as IfdEntryTradeType)}>
-                    <option value="marginOpen">信用新規</option>
-                    <option value="cash">現物買い</option>
+                    <option value="marginOpen">{ui.marginOpen}</option>
+                    <option value="cash">{ui.cashBuy}</option>
                   </select>
                 </label>
                 <div className="segmented">
                   <button className={ifdOrderType === "market" ? "active" : ""} type="button" onClick={() => setIfdOrderType("market")}>
-                    成行
+                    {ui.market}
                   </button>
                   <button className={ifdOrderType === "limit" ? "active" : ""} type="button" onClick={() => setIfdOrderType("limit")}>
-                    指値
+                    {ui.limit}
                   </button>
                 </div>
                 <label>
-                  数量
+                  {ui.quantity}
                   <input
                     min={LOT_SIZE}
                     step={LOT_SIZE}
@@ -1145,7 +1661,7 @@ function App() {
                   />
                 </label>
                 <label className="price-field">
-                  <span>新規指値</span>
+                  <span>{ui.entryLimit}</span>
                   <div className="price-input-row">
                     <input
                       disabled={ifdOrderType === "market"}
@@ -1159,11 +1675,11 @@ function App() {
                       disabled={ifdOrderType === "market" || !displayCurrentBar}
                       onClick={() => setPriceToCurrent(setIfdLimitPrice)}
                     >
-                      現在値
+                      {ui.setCurrentPrice}
                     </button>
                     <button
                       type="button"
-                      aria-label="新規指値を1呼値下げる"
+                      aria-label={formatTickButtonLabel(ui.entryLimit, -1, languageMode)}
                       disabled={ifdOrderType === "market" || !displayCurrentBar}
                       onClick={() => movePriceByTick(ifdLimitPrice, setIfdLimitPrice, -1)}
                     >
@@ -1171,7 +1687,7 @@ function App() {
                     </button>
                     <button
                       type="button"
-                      aria-label="新規指値を1呼値上げる"
+                      aria-label={formatTickButtonLabel(ui.entryLimit, 1, languageMode)}
                       disabled={ifdOrderType === "market" || !displayCurrentBar}
                       onClick={() => movePriceByTick(ifdLimitPrice, setIfdLimitPrice, 1)}
                     >
@@ -1180,7 +1696,7 @@ function App() {
                   </div>
                 </label>
                 <label className="price-field">
-                  <span>利確価格</span>
+                  <span>{ui.targetPrice}</span>
                   <div className="price-input-row">
                     <input
                       inputMode="decimal"
@@ -1199,11 +1715,11 @@ function App() {
                         setPriceToCurrent(setIfdTargetPrice);
                       }}
                     >
-                      現在値
+                      {ui.setCurrentPrice}
                     </button>
                     <button
                       type="button"
-                      aria-label="利確価格を1呼値下げる"
+                      aria-label={formatTickButtonLabel(ui.targetPrice, -1, languageMode)}
                       disabled={!displayCurrentBar}
                       onClick={() => {
                         setIfdTargetPriceSynced(false);
@@ -1214,7 +1730,7 @@ function App() {
                     </button>
                     <button
                       type="button"
-                      aria-label="利確価格を1呼値上げる"
+                      aria-label={formatTickButtonLabel(ui.targetPrice, 1, languageMode)}
                       disabled={!displayCurrentBar}
                       onClick={() => {
                         setIfdTargetPriceSynced(false);
@@ -1226,7 +1742,7 @@ function App() {
                   </div>
                 </label>
                 <label className="price-field">
-                  <span>損切価格</span>
+                  <span>{ui.stopPrice}</span>
                   <div className="price-input-row">
                     <input
                       inputMode="decimal"
@@ -1245,11 +1761,11 @@ function App() {
                         setPriceToCurrent(setIfdStopPrice);
                       }}
                     >
-                      現在値
+                      {ui.setCurrentPrice}
                     </button>
                     <button
                       type="button"
-                      aria-label="損切価格を1呼値下げる"
+                      aria-label={formatTickButtonLabel(ui.stopPrice, -1, languageMode)}
                       disabled={!displayCurrentBar}
                       onClick={() => {
                         setIfdStopPriceSynced(false);
@@ -1260,7 +1776,7 @@ function App() {
                     </button>
                     <button
                       type="button"
-                      aria-label="損切価格を1呼値上げる"
+                      aria-label={formatTickButtonLabel(ui.stopPrice, 1, languageMode)}
                       disabled={!displayCurrentBar}
                       onClick={() => {
                         setIfdStopPriceSynced(false);
@@ -1271,15 +1787,13 @@ function App() {
                     </button>
                   </div>
                 </label>
-                <p className="notice compact-notice">
-                  新規が現在バーで約定した場合にOCO返済を登録します。同一バーでの返済判定は行いません。
-                </p>
+                <p className="notice compact-notice">{ui.ifdocoNote}</p>
                 <div className="order-actions">
                   <button type="button" className="buy-button" onClick={() => placeIfdOco("buy")}>
-                    買いIFDOCO
+                    {ui.buyIfdoco}
                   </button>
                   <button type="button" className="sell-button" disabled={ifdTradeType === "cash"} onClick={() => placeIfdOco("sell")}>
-                    売りIFDOCO
+                    {ui.sellIfdoco}
                   </button>
                 </div>
               </div>
@@ -1288,9 +1802,9 @@ function App() {
       ) : null}
 
       <footer className="app-footer">
-        <span>データソース: ユーザー選択CSVのみ</span>
-        <span>投資判断は提供しません</span>
-        <span>約定・手数料・税金・信用規制を保証しません</span>
+        <span>{ui.footerData}</span>
+        <span>{ui.footerAdvice}</span>
+        <span>{ui.footerLimits}</span>
       </footer>
     </main>
   );
@@ -1351,6 +1865,19 @@ function clampOrderPanelPosition(position: FloatingPanelPosition): FloatingPanel
 function mergeSymbols(current: SymbolData[], incoming: SymbolData[]): SymbolData[] {
   const next = [...current];
   for (const symbol of incoming) {
+    const matchingIndexes = next
+      .map((item, index) => (item.fileName === symbol.fileName ? index : -1))
+      .filter((index) => index >= 0);
+    if (matchingIndexes.length > 0) {
+      const keepIndex = matchingIndexes[0];
+      const preservedId = next[keepIndex].id;
+      next[keepIndex] = { ...symbol, id: preservedId };
+      for (const duplicateIndex of matchingIndexes.slice(1).reverse()) {
+        next.splice(duplicateIndex, 1);
+      }
+      continue;
+    }
+
     let id = symbol.id;
     let suffix = 2;
     while (next.some((item) => item.id === id)) {
@@ -1360,6 +1887,26 @@ function mergeSymbols(current: SymbolData[], incoming: SymbolData[]): SymbolData
     next.push({ ...symbol, id });
   }
   return next;
+}
+
+function mergeHistoricalTrades(current: HistoricalTrade[], incoming: HistoricalTrade[]): HistoricalTrade[] {
+  const next = new Map(current.map((trade) => [trade.id, trade]));
+  for (const trade of incoming) next.set(trade.id, trade);
+  return Array.from(next.values()).sort((first, second) => historicalTradeTimestamp(first) - historicalTradeTimestamp(second));
+}
+
+function historicalTradeTimestamp(trade: HistoricalTrade): number {
+  const timestamp = Date.parse(trade.time.replace(" ", "T").replace(/([+-]\d{2})(\d{2})$/, "$1:$2"));
+  return Number.isFinite(timestamp) ? Math.floor(timestamp / 1000) : 0;
+}
+
+function formatHistoricalTradeLabel(trade: HistoricalTrade, languageMode: LanguageMode): string {
+  if (languageMode === "en") {
+    const type = trade.tradeType === "marginOpen" ? "Margin open" : trade.tradeType === "marginClose" ? "Margin close" : "Cash";
+    return `${type} ${trade.side === "buy" ? "Buy" : "Sell"}`;
+  }
+  const type = trade.tradeType === "marginOpen" ? "信用新規" : trade.tradeType === "marginClose" ? "信用返済" : "現物";
+  return `${type}${trade.side === "buy" ? "買" : "売"}`;
 }
 
 function normalizeLotQuantity(value: number): number {
@@ -1376,9 +1923,95 @@ function formatOrderPriceInput(value: number): string {
   return Number.isInteger(rounded) ? String(rounded) : String(Number(rounded.toFixed(10)));
 }
 
-function formatPositionSide(product: PositionProduct, side: "long" | "short"): string {
+function formatPositionSide(product: PositionProduct, side: "long" | "short", languageMode: LanguageMode): string {
+  if (languageMode === "en") {
+    if (product === "cash") return "Holding";
+    return side === "long" ? "Long" : "Short";
+  }
   if (product === "cash") return "保有";
   return side === "long" ? "買建" : "売建";
+}
+
+function formatCurrency(value: number, languageMode: LanguageMode): string {
+  const locale = languageMode === "ja" ? "ja-JP" : "en-US";
+  const amount = new Intl.NumberFormat(locale, { maximumFractionDigits: 0 }).format(Math.round(value));
+  return languageMode === "ja" ? `${amount} 円` : `¥${amount}`;
+}
+
+function formatSignedCurrency(value: number, languageMode: LanguageMode): string {
+  const sign = value > 0 ? "+" : "";
+  return `${sign}${formatCurrency(value, languageMode)}`;
+}
+
+function formatCount(value: number, languageMode: LanguageMode): string {
+  const locale = languageMode === "ja" ? "ja-JP" : "en-US";
+  const count = value.toLocaleString(locale);
+  return languageMode === "ja" ? `${count} 件` : `${count} orders`;
+}
+
+function formatDateNote(
+  activeDate: string | undefined,
+  requestedDate: string,
+  exact: boolean,
+  hasSelectedSymbol: boolean,
+  languageMode: LanguageMode,
+): string {
+  if (!activeDate) {
+    if (hasSelectedSymbol) return languageMode === "ja" ? "YYYY-MM-DD形式で入力してください。" : "Enter a date in YYYY-MM-DD format.";
+    return languageMode === "ja" ? "CSV読込後に日付を選択できます。" : "You can choose a date after loading a CSV file.";
+  }
+  if (!requestedDate) {
+    return languageMode === "ja"
+      ? `未指定のため、今日に最も近い ${activeDate} を表示中`
+      : `No date specified. Showing ${activeDate}, the closest date to today.`;
+  }
+  if (exact) {
+    return languageMode === "ja" ? `指定日 ${activeDate} を表示中` : `Showing requested date ${activeDate}.`;
+  }
+  return languageMode === "ja"
+    ? `指定日にデータがないため、最も近い ${activeDate} を表示中`
+    : `No data exists for the requested date. Showing nearest date ${activeDate}.`;
+}
+
+function formatTickButtonLabel(label: string, direction: 1 | -1, languageMode: LanguageMode): string {
+  if (languageMode === "ja") {
+    return `${label}を1呼値${direction > 0 ? "上げる" : "下げる"}`;
+  }
+  return `${direction > 0 ? "Increase" : "Decrease"} ${label} by one tick`;
+}
+
+function translateCsvParseMessage(message: string, languageMode: LanguageMode): string {
+  if (languageMode === "ja") return message;
+  if (message === "CSVにデータ行がありません。") return "The CSV has no data rows.";
+  if (message.startsWith("必須カラムが不足しています:")) return message.replace("必須カラムが不足しています:", "Missing required columns:");
+  if (message === "有効なバーがありません。") return "No valid bars were found.";
+  return message
+    .replace(/(\d+)行目:/, "Line $1:")
+    .replace("カラム数がヘッダと一致しません。", "Column count does not match the header.")
+    .replace(" が空です。", " is empty.")
+    .replace(" が数値ではありません。", " is not numeric.")
+    .replace("Datetime は YYYY-MM-DD HH:mm:ss+0900 形式で指定してください。", "Datetime must be in YYYY-MM-DD HH:mm:ss+0900 format.")
+    .replace("Datetime は実在する日時を指定してください。", "Datetime must be a valid date and time.")
+    .replace("High が Open/Close/Low より小さいです。", "High is lower than Open/Close/Low.")
+    .replace("Low が Open/Close/High より大きいです。", "Low is higher than Open/Close/High.");
+}
+
+function translateOrderMessage(message: string | undefined, languageMode: LanguageMode): string {
+  if (languageMode === "ja") return message ?? "条件を確認してください。";
+  if (!message) return "Check the order conditions.";
+  const translations: Record<string, string> = {
+    "数量は1以上の整数で指定してください。": "Quantity must be a positive integer.",
+    "日跨ぎ建玉があるため新規注文はできません。信用返済で建玉を解消してください。":
+      "New margin orders are blocked while positions are carried overnight. Close margin positions first.",
+    "売却対象の現物保有がありません。": "There is no cash position to sell.",
+    "現物保有数量を超えています。": "Order quantity exceeds the cash position quantity.",
+    "返済対象の建玉がありません。": "There is no margin position to close.",
+    "返済可能数量を超えています。": "Order quantity exceeds the closable margin quantity.",
+    "指値が現在バーの高値/安値に到達していません。": "The limit price is outside the current candle range.",
+    "現金残高を超える現物買い注文です。": "Cash buy order exceeds cash balance.",
+    "信用建余力を超える新規注文です。": "Margin open order exceeds margin buying power.",
+  };
+  return translations[message] ?? message;
 }
 
 function calculateDailyMarketStats(
