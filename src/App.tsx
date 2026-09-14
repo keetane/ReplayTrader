@@ -21,7 +21,7 @@ import {
   X,
 } from "lucide-react";
 import { ChartPanel } from "./components/ChartPanel";
-import { filterBarsByDate, filterBarsFromDateLookback, prepareBarsForTimeframe, resolveRequestedDate } from "./lib/bars";
+import { findReplayBarIndex, filterBarsByDate, prepareBarsForTimeframe, resolveRequestedDate, sliceBarsToReplayPosition } from "./lib/bars";
 import { buildSyntheticCsv, CsvParseError, parseCsvText } from "./lib/csv";
 import { decodeTradeHistory, historicalTradeMatchesSymbol, parseTradeHistoryText, TradeHistoryParseError } from "./lib/tradeHistory";
 import { formatPercent, formatPrice, formatVolume } from "./lib/format";
@@ -29,7 +29,7 @@ import {
   clampToTseTick,
   getIntrabarDisplayVolume,
   getIntrabarWalkIntervalMs,
-  getReplayAdvanceIntervalMs,
+  getReplayRemainingIntervalMs,
   getTimeframeDurationMs,
   moveToAdjacentTseTick,
   roundToTseTick,
@@ -71,7 +71,6 @@ const MA_PERIODS: [number, number, number] = [5, 25, 60];
 const BOLLINGER_PERIOD_OPTIONS = [10, 20, 25, 50, 75];
 const INITIAL_CASH_OPTIONS = [500_000, 1_000_000, 3_000_000, 5_000_000, 10_000_000];
 const LOT_SIZE = 100;
-const CHART_LOOKBACK_DAYS = 7;
 const EMPTY_POSITION_PNL_SUMMARY = { buy: 0, sell: 0, total: 0 };
 const ORDER_PANEL_WIDTH = 420;
 const ORDER_PANEL_MAX_HEIGHT = 760;
@@ -95,16 +94,14 @@ const UI_TEXT = {
     tradeHistoryTitle: "実約定履歴",
     showHistoricalTrades: "実約定を表示",
     hideHistoricalTrades: "実約定を非表示",
-    chooseTradeHistory: "約定履歴CSV",
-    tradeHistoryHint: "約定済みのみをチャートへ表示 / Shift-JIS対応",
+    chooseTradeHistory: "約定・取引履歴CSV",
+    tradeHistoryHint: "stockorder / tradehistory対応・約定済みのみ表示 / Shift-JIS対応",
     noHistoricalTrades: "実約定履歴はありません。",
     historicalTradeCount: "実約定",
     excludedTradeCount: "除外",
-    historicalTimeNote: "CSVの注文日時を約定表示時刻として使用",
+    historicalTimeNote: "stockorderは注文時刻、tradehistoryは約定価格を含む最初の足へ表示",
     generateSample: "架空サンプルを生成",
-    dateTitle: "日付指定",
-    replayDate: "リプレイ日",
-    clearDate: "未指定に戻す",
+    replayDate: "ジャンプ先の日付",
     symbolList: "銘柄一覧",
     noSymbols: "読み込み済みCSVはありません。",
     previousChange: "前日比",
@@ -150,6 +147,7 @@ const UI_TEXT = {
     screenshot: "チャートをスクショ保存",
     currentPrice: "現在値",
     pendingIfdoco: "IFDOCO待機",
+    pendingStop: "逆指値待機",
     accountSummary: "口座サマリー",
     initialCash: "初期資金",
     virtualCapital: "仮想資金",
@@ -193,7 +191,9 @@ const UI_TEXT = {
     marginClose: "信用返済",
     market: "成行",
     limit: "指値",
+    stop: "逆指値",
     limitPrice: "指値価格",
+    triggerPrice: "トリガー価格",
     setCurrentPrice: "現在値",
     buyOrder: "買い注文",
     sellOrder: "売り注文",
@@ -224,16 +224,14 @@ const UI_TEXT = {
     tradeHistoryTitle: "Historical fills",
     showHistoricalTrades: "Show historical fills",
     hideHistoricalTrades: "Hide historical fills",
-    chooseTradeHistory: "Trade history CSV",
-    tradeHistoryHint: "Only confirmed fills are shown / Shift-JIS supported",
+    chooseTradeHistory: "Orders / trades CSV",
+    tradeHistoryHint: "Supports stockorder and tradehistory / confirmed fills only / Shift-JIS supported",
     noHistoricalTrades: "No historical fills.",
     historicalTradeCount: "fills",
     excludedTradeCount: "excluded",
-    historicalTimeNote: "CSV order time is used as the fill display time",
+    historicalTimeNote: "stockorder uses order time; tradehistory uses the first bar containing the fill price",
     generateSample: "Generate sample",
-    dateTitle: "Date",
-    replayDate: "Replay date",
-    clearDate: "Clear date",
+    replayDate: "Jump to date",
     symbolList: "Symbols",
     noSymbols: "No CSV files loaded.",
     previousChange: "Change",
@@ -279,6 +277,7 @@ const UI_TEXT = {
     screenshot: "Save chart screenshot",
     currentPrice: "Current",
     pendingIfdoco: "IFDOCO pending",
+    pendingStop: "Stop pending",
     accountSummary: "Account Summary",
     initialCash: "Initial cash",
     virtualCapital: "Virtual capital",
@@ -322,7 +321,9 @@ const UI_TEXT = {
     marginClose: "Margin close",
     market: "Market",
     limit: "Limit",
+    stop: "Stop",
     limitPrice: "Limit price",
+    triggerPrice: "Trigger price",
     setCurrentPrice: "Current",
     buyOrder: "Buy order",
     sellOrder: "Sell order",
@@ -371,7 +372,17 @@ interface PendingOcoOrder {
   quantity: number;
   targetPrice: number;
   stopPrice: number;
-  createdReplayIndex: number;
+  activateAtTime: number;
+}
+
+interface PendingEntryOrder {
+  id: string;
+  symbol: string;
+  side: Side;
+  tradeType: "cash" | "marginOpen";
+  quantity: number;
+  stopPrice: number;
+  activateAtTime: number;
 }
 
 interface FloatingPanelPosition {
@@ -396,6 +407,7 @@ function App() {
   const [themeMode, setThemeMode] = useState<ThemeMode>("dark");
   const [languageMode, setLanguageMode] = useState<LanguageMode>("ja");
   const [replayIndex, setReplayIndex] = useState(0);
+  const [chartAnchorIndex, setChartAnchorIndex] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
   const [trading, setTrading] = useState<TradingState>(INITIAL_TRADING_STATE);
@@ -403,7 +415,7 @@ function App() {
   const [showHistoricalTrades, setShowHistoricalTrades] = useState(true);
   const [parseMessage, setParseMessage] = useState<string>(UI_TEXT.ja.initialMessage);
   const [tradeType, setTradeType] = useState<TradeType>("marginOpen");
-  const [orderType, setOrderType] = useState<"market" | "limit">("market");
+  const [orderType, setOrderType] = useState<"market" | "limit" | "stop">("market");
   const [quantity, setQuantity] = useState(100);
   const [limitPrice, setLimitPrice] = useState("");
   const [isOrderModalOpen, setIsOrderModalOpen] = useState(false);
@@ -418,6 +430,7 @@ function App() {
   const [ifdTargetPriceSynced, setIfdTargetPriceSynced] = useState(true);
   const [ifdStopPriceSynced, setIfdStopPriceSynced] = useState(true);
   const [pendingOcoOrders, setPendingOcoOrders] = useState<PendingOcoOrder[]>([]);
+  const [pendingEntryOrders, setPendingEntryOrders] = useState<PendingEntryOrder[]>([]);
   const [walkState, setWalkState] = useState<IntrabarWalkState | null>(null);
   const [isCsvDragging, setIsCsvDragging] = useState(false);
   const [isTradeHistoryDragging, setIsTradeHistoryDragging] = useState(false);
@@ -443,28 +456,25 @@ function App() {
     () => prepareBarsForTimeframe(selectedSymbol?.bars ?? [], timeframe),
     [selectedSymbol?.bars, timeframe],
   );
-  const bars = useMemo(() => filterBarsByDate(timeframeBars, resolvedDate.activeDate), [resolvedDate.activeDate, timeframeBars]);
-  const chartBars = useMemo(
-    () => filterBarsFromDateLookback(timeframeBars, resolvedDate.activeDate, CHART_LOOKBACK_DAYS),
-    [resolvedDate.activeDate, timeframeBars],
+  const bars = timeframeBars;
+  const jumpIndex = useMemo(
+    () => Math.max(0, bars.findIndex((bar) => bar.datetime.startsWith(resolvedDate.activeDate ?? "invalid"))),
+    [bars, resolvedDate.activeDate],
   );
   const currentIndex = bars.length === 0 ? 0 : Math.min(replayIndex, bars.length - 1);
   const currentBar = bars[currentIndex];
   const displayCurrentBar = currentBar ? resolveDisplayCurrentBar(currentBar, walkState, playing) : currentBar;
   const displayDatetime = currentBar ? resolveDisplayDatetime(currentBar, walkState, playing) : undefined;
-  const currentTime = currentBar?.time;
-  const visibleBars = useMemo(() => {
-    if (!displayCurrentBar) return [];
-    return [...chartBars.filter((bar) => bar.time < displayCurrentBar.time), displayCurrentBar];
-  }, [chartBars, displayCurrentBar]);
-  const visibleMaSourceBars = useMemo(
-    () => (currentTime === undefined ? [] : timeframeBars.filter((bar) => bar.time <= currentTime)),
-    [currentTime, timeframeBars],
+  const visibleBars = useMemo(
+    () => sliceBarsToReplayPosition(bars, currentIndex, displayCurrentBar),
+    [bars, currentIndex, displayCurrentBar],
   );
-  const dailyMarketStats = useMemo(
-    () => calculateDailyMarketStats(bars, currentIndex, displayCurrentBar, timeframeBars, resolvedDate.activeDate),
-    [bars, currentIndex, displayCurrentBar, timeframeBars, resolvedDate.activeDate],
-  );
+  const dailyMarketStats = useMemo(() => {
+    const date = currentBar?.datetime.slice(0, 10);
+    const dayBars = filterBarsByDate(bars, date);
+    const dayIndex = dayBars.findIndex((bar) => bar.time === currentBar?.time);
+    return calculateDailyMarketStats(dayBars, dayIndex, displayCurrentBar, bars, date);
+  }, [bars, currentBar, displayCurrentBar]);
   const valuationPrice = displayCurrentBar?.close;
   const unrealizedPnl = valuationPrice == null ? 0 : evaluateUnrealizedPnl(trading.positions, valuationPrice);
   const positionPnlSummary =
@@ -483,12 +493,59 @@ function App() {
     [selectedSymbolId, symbols],
   );
   const visibleHistoricalTrades = useMemo(() => {
-    if (!showHistoricalTrades || !selectedHistoricalSymbol || currentTime == null) return [];
-    const currentBarEnd = Number(currentTime) + getTimeframeDurationMs(timeframe) / 1000 - 1;
-    return historicalTrades.filter(
-      (trade) => historicalTradeMatchesSymbol(trade, selectedHistoricalSymbol, resolvedDate.activeDate) && historicalTradeTimestamp(trade) <= currentBarEnd,
-    );
-  }, [currentTime, historicalTrades, resolvedDate.activeDate, selectedHistoricalSymbol, showHistoricalTrades, timeframe]);
+    if (!showHistoricalTrades || !selectedHistoricalSymbol) return [];
+    const sourceBars = selectedHistoricalSymbol.bars;
+    const start = sourceBars[0]?.time;
+    const end = sourceBars.at(-1)?.time;
+    if (start == null || end == null) return [];
+    const dates = new Set(sourceBars.map((bar) => bar.datetime.slice(0, 10)));
+    return historicalTrades.filter((trade) => {
+      const timestamp = historicalTradeTimestamp(trade);
+      return historicalTradeMatchesSymbol(trade, selectedHistoricalSymbol)
+        && dates.has(trade.date) && timestamp >= start && timestamp < Number(end) + 60;
+    });
+  }, [historicalTrades, selectedHistoricalSymbol, showHistoricalTrades]);
+
+  useEffect(() => {
+    if (!currentBar) return;
+    const triggeredMessages: string[] = [];
+    setPendingEntryOrders((current) => {
+      const remaining: PendingEntryOrder[] = [];
+      for (const order of current) {
+        if (order.symbol !== selectedSymbolId || Number(currentBar.time) < order.activateAtTime) {
+          remaining.push(order);
+          continue;
+        }
+
+        const triggered = order.side === "buy" ? currentBar.high >= order.stopPrice : currentBar.low <= order.stopPrice;
+        if (!triggered) {
+          remaining.push(order);
+          continue;
+        }
+
+        setTrading((currentTrading) =>
+          submitVirtualOrder(currentTrading, {
+            symbol: order.symbol,
+            side: order.side,
+            tradeType: order.tradeType,
+            orderType: "market",
+            quantity: order.quantity,
+            bar: currentBar,
+            replayIndex: currentIndex,
+          }),
+        );
+        triggeredMessages.push(
+          languageMode === "ja"
+            ? `逆指値エントリーがトリガーされました: ${formatPrice(currentBar.close)}`
+            : `Stop entry triggered at ${formatPrice(currentBar.close)}`,
+        );
+      }
+      return remaining;
+    });
+    if (triggeredMessages.length > 0) {
+      setParseMessage(triggeredMessages.join("\n"));
+    }
+  }, [currentBar, currentIndex, languageMode, selectedSymbolId]);
 
   useEffect(() => {
     if (!playing || !currentBar || bars.length === 0) {
@@ -497,7 +554,8 @@ function App() {
     }
 
     setWalkState((value) => nextWalkState(value, currentBar, timeframe, speed));
-    const advanceIntervalMs = getReplayAdvanceIntervalMs(timeframe, speed);
+    const elapsedAtSchedule = walkState?.time === currentBar.time ? walkState.elapsedMs : 0;
+    const nextAdvanceDelayMs = getReplayRemainingIntervalMs(timeframe, speed, elapsedAtSchedule);
     const walkVolume = currentIndex === 0 ? bars[1]?.volume ?? currentBar.volume : currentBar.volume;
     const walkIntervalMs = getIntrabarWalkIntervalMs(
       timeframe,
@@ -509,7 +567,7 @@ function App() {
     const walkTimer = window.setInterval(() => {
       setWalkState((value) => nextWalkState(value, currentBar, timeframe, speed));
     }, walkIntervalMs);
-    const advanceTimer = window.setInterval(() => {
+    const advanceTimer = window.setTimeout(() => {
       setReplayIndex((value) => {
         if (value >= bars.length - 1) {
           setPlaying(false);
@@ -517,11 +575,11 @@ function App() {
         }
         return value + 1;
       });
-    }, advanceIntervalMs);
+    }, nextAdvanceDelayMs);
 
     return () => {
       window.clearInterval(walkTimer);
-      window.clearInterval(advanceTimer);
+      window.clearTimeout(advanceTimer);
     };
   }, [bars, bars.length, currentBar, currentIndex, playing, speed, tickMode, timeframe]);
 
@@ -548,7 +606,7 @@ function App() {
     setPendingOcoOrders((current) => {
       const remaining: PendingOcoOrder[] = [];
       for (const order of current) {
-        if (order.symbol !== selectedSymbolId || currentIndex <= order.createdReplayIndex) {
+        if (order.symbol !== selectedSymbolId || Number(currentBar.time) < order.activateAtTime) {
           remaining.push(order);
           continue;
         }
@@ -594,9 +652,12 @@ function App() {
 
   useEffect(() => {
     setPlaying(false);
-    setReplayIndex(0);
+    if (resolvedDate.activeDate) {
+      setReplayIndex(jumpIndex);
+      setChartAnchorIndex(jumpIndex);
+    }
     setWalkState(null);
-  }, [selectedSymbolId, requestedDate, timeframe]);
+  }, [selectedSymbolId, resolvedDate.activeDate]);
 
   async function handleFiles(files: FileList | null) {
     if (!files || files.length === 0) return;
@@ -797,6 +858,42 @@ function App() {
     setter(formatOrderPriceInput(next));
   }
 
+  function changeTimeframe(nextTimeframe: Timeframe) {
+    if (nextTimeframe === timeframe) return;
+
+    const nextBars = prepareBarsForTimeframe(selectedSymbol?.bars ?? [], nextTimeframe);
+    const currentElapsedMs = currentBar && walkState?.time === currentBar.time ? walkState.elapsedMs : 0;
+    const replayTimestamp = currentBar ? Number(currentBar.time) + currentElapsedMs / 1_000 : 0;
+    const nextIndex = findReplayBarIndex(nextBars, replayTimestamp);
+    const nextBar = nextBars[nextIndex];
+
+    setTimeframe(nextTimeframe);
+    setReplayIndex(nextIndex);
+    setChartAnchorIndex(nextIndex);
+
+    if (!playing || !nextBar) {
+      setWalkState(null);
+      return;
+    }
+
+    const elapsedMs = clamp(
+      (replayTimestamp - Number(nextBar.time)) * 1_000,
+      0,
+      Math.max(0, getTimeframeDurationMs(nextTimeframe) - 1_000),
+    );
+    const close = clampToTseTick(displayCurrentBar?.close ?? nextBar.open, nextBar.low, nextBar.high);
+    const normalizedSpeed = Number.isFinite(speed) && speed > 0 ? speed : 1;
+    setWalkState({
+      time: nextBar.time,
+      close,
+      high: Math.max(nextBar.open, close),
+      low: Math.min(nextBar.open, close),
+      volume: getIntrabarDisplayVolume(nextBar.volume, elapsedMs, nextTimeframe),
+      elapsedMs,
+      startedAtMs: Date.now() - elapsedMs / normalizedSpeed,
+    });
+  }
+
   function placeOrder(orderSide: Side) {
     if (!selectedSymbol || !currentBar) {
       setParseMessage(
@@ -809,6 +906,50 @@ function App() {
 
     const normalizedQuantity = normalizeLotQuantity(quantity);
     setQuantity(normalizedQuantity);
+
+    if (orderType === "stop") {
+      if (tradeType === "marginClose" || (tradeType === "cash" && orderSide === "sell")) {
+        setParseMessage(
+          languageMode === "ja"
+            ? "逆指値エントリーは現物買いまたは信用新規で指定してください。"
+            : "Stop entries support cash buys and margin opens only.",
+        );
+        return;
+      }
+      const stopPrice = parseOrderPrice(limitPrice);
+      const currentPrice = displayCurrentBar?.close;
+      if (stopPrice == null || currentPrice == null) {
+        setParseMessage(languageMode === "ja" ? "逆指値のトリガー価格を確認してください。" : "Check the stop trigger price.");
+        return;
+      }
+      const directionIsValid = orderSide === "buy" ? stopPrice > currentPrice : stopPrice < currentPrice;
+      if (!directionIsValid) {
+        setParseMessage(
+          languageMode === "ja"
+            ? "買い逆指値は現在値より高く、売り逆指値は現在値より安く指定してください。"
+            : "Buy stops must be above the current price; sell stops must be below it.",
+        );
+        return;
+      }
+      setPendingEntryOrders((current) => [
+        {
+          id: crypto.randomUUID(),
+          symbol: selectedSymbol.id,
+          side: orderSide,
+          tradeType: tradeType as "cash" | "marginOpen",
+          quantity: normalizedQuantity,
+          stopPrice,
+          activateAtTime: Number(currentBar.time) + getTimeframeDurationMs(timeframe) / 1_000,
+        },
+        ...current,
+      ]);
+      setParseMessage(
+        languageMode === "ja"
+          ? `逆指値エントリーを待機しました: ${formatPrice(stopPrice)}`
+          : `Stop entry is pending at ${formatPrice(stopPrice)}`,
+      );
+      return;
+    }
 
     setTrading((current) => {
       const next = submitVirtualOrder(current, {
@@ -921,7 +1062,7 @@ function App() {
         quantity: normalizedQuantity,
         targetPrice,
         stopPrice,
-        createdReplayIndex: currentIndex,
+        activateAtTime: Number(currentBar.time) + getTimeframeDurationMs(timeframe) / 1_000,
       },
       ...currentOco,
     ]);
@@ -1096,30 +1237,6 @@ function App() {
                 <X size={17} />
               </button>
             </div>
-            <div className="drawer-controls">
-              <section className="drawer-section">
-                <h3>{ui.dateTitle}</h3>
-                <label className="date-field drawer-date-field">
-                  <span>
-                    <CalendarDays size={15} />
-                    {ui.replayDate}
-                  </span>
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    placeholder="YYYY-MM-DD"
-                    value={requestedDate}
-                    onChange={(event) => setRequestedDate(event.currentTarget.value)}
-                  />
-                </label>
-                <button className="secondary-button" type="button" onClick={() => setRequestedDate("")}>
-                  {ui.clearDate}
-                </button>
-                <p className="date-note">
-                  {formatDateNote(resolvedDate.activeDate, requestedDate, resolvedDate.exact, Boolean(selectedSymbol), languageMode)}
-                </p>
-              </section>
-            </div>
             <div className="symbol-list">
               {symbols.length === 0 ? <p className="empty-text">{ui.noSymbols}</p> : null}
               {symbols.map((symbol) => {
@@ -1235,7 +1352,7 @@ function App() {
                 </label>
                 <label className="timeframe-picker">
                   <span>{ui.timeframe}</span>
-                  <select value={timeframe} onChange={(event) => setTimeframe(event.currentTarget.value as Timeframe)}>
+                  <select value={timeframe} onChange={(event) => changeTimeframe(event.currentTarget.value as Timeframe)}>
                     <option value="1m">{ui.oneMinute}</option>
                     <option value="5m">{ui.fiveMinutes}</option>
                   </select>
@@ -1265,10 +1382,10 @@ function App() {
 
           <ChartPanel
             bars={visibleBars}
-            maSourceBars={visibleMaSourceBars}
+            maSourceBars={visibleBars}
             executions={trading.executions.filter((item) => item.symbol === selectedSymbolId)}
             historicalTrades={visibleHistoricalTrades}
-            markerBars={chartBars}
+            markerBars={bars}
             maPeriods={MA_PERIODS}
             indicatorMode={indicatorMode}
             languageMode={languageMode}
@@ -1276,9 +1393,11 @@ function App() {
             themeMode={themeMode}
             timeframe={timeframe}
             viewportKey={chartViewportKey}
+            jumpIndex={chartAnchorIndex}
             canTogglePlayback={bars.length > 0}
             onTogglePlayback={() => setPlaying((value) => !value)}
             onScreenshotReady={registerChartScreenshot}
+            screenshotSymbol={selectedSymbol?.id ?? "chart"}
             screenshotFileName={`ReplayTrader_${selectedSymbolId ?? "chart"}_${resolvedDate.activeDate ?? "undated"}`}
           />
 
@@ -1304,7 +1423,21 @@ function App() {
                 {bars.length === 0 ? 0 : currentIndex + 1} / {bars.length}
               </small>
             </div>
+            <p className="date-note replay-date-note">
+              {formatDateNote(resolvedDate.activeDate, requestedDate, resolvedDate.exact, Boolean(selectedSymbol), languageMode)}
+            </p>
             <div className="control-row">
+              <label className="replay-date-picker">
+                <CalendarDays size={16} aria-hidden="true" />
+                <span className="sr-only">{ui.replayDate}</span>
+                <input
+                  aria-label={ui.replayDate}
+                  title={ui.replayDate}
+                  type="date"
+                  value={requestedDate}
+                  onChange={(event) => setRequestedDate(event.currentTarget.value)}
+                />
+              </label>
               <button type="button" className="primary-button" disabled={bars.length === 0} onClick={() => setPlaying((value) => !value)}>
                 {playing ? <Pause size={16} /> : <Play size={16} />}
                 {playing ? ui.pause : ui.play}
@@ -1557,6 +1690,7 @@ function App() {
             <div className="order-modal-status">
               <Metric label={ui.currentPrice} value={displayCurrentBar ? formatPrice(displayCurrentBar.close) : "-"} />
               <Metric label={ui.pendingIfdoco} value={formatCount(pendingOcoOrders.length, languageMode)} />
+              <Metric label={ui.pendingStop} value={formatCount(pendingEntryOrders.length, languageMode)} />
             </div>
 
             {orderMode === "normal" ? (
@@ -1569,12 +1703,15 @@ function App() {
                     <option value="marginClose">{ui.marginClose}</option>
                   </select>
                 </label>
-                <div className="segmented">
+                <div className="segmented order-type-selector">
                   <button className={orderType === "market" ? "active" : ""} type="button" onClick={() => setOrderType("market")}>
                     {ui.market}
                   </button>
                   <button className={orderType === "limit" ? "active" : ""} type="button" onClick={() => setOrderType("limit")}>
                     {ui.limit}
+                  </button>
+                  <button className={orderType === "stop" ? "active" : ""} type="button" onClick={() => setOrderType("stop")}>
+                    {ui.stop}
                   </button>
                 </div>
                 <label>
@@ -1589,7 +1726,7 @@ function App() {
                   />
                 </label>
                 <label className="price-field">
-                  <span>{ui.limitPrice}</span>
+                  <span>{orderType === "stop" ? ui.triggerPrice : ui.limitPrice}</span>
                   <div className="price-input-row">
                     <input
                       disabled={orderType === "market"}
@@ -1607,7 +1744,7 @@ function App() {
                     </button>
                     <button
                       type="button"
-                      aria-label={formatTickButtonLabel(ui.limitPrice, -1, languageMode)}
+                      aria-label={formatTickButtonLabel(orderType === "stop" ? ui.triggerPrice : ui.limitPrice, -1, languageMode)}
                       disabled={orderType === "market" || !displayCurrentBar}
                       onClick={() => movePriceByTick(limitPrice, setLimitPrice, -1)}
                     >
@@ -1615,7 +1752,7 @@ function App() {
                     </button>
                     <button
                       type="button"
-                      aria-label={formatTickButtonLabel(ui.limitPrice, 1, languageMode)}
+                      aria-label={formatTickButtonLabel(orderType === "stop" ? ui.triggerPrice : ui.limitPrice, 1, languageMode)}
                       disabled={orderType === "market" || !displayCurrentBar}
                       onClick={() => movePriceByTick(limitPrice, setLimitPrice, 1)}
                     >

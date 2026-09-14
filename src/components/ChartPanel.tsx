@@ -35,10 +35,12 @@ interface ChartPanelProps {
   themeMode: ThemeMode;
   timeframe: Timeframe;
   viewportKey: string;
+  jumpIndex: number;
   canTogglePlayback: boolean;
   onTogglePlayback: () => void;
   onScreenshotReady: (handler: (() => Promise<void>) | null) => void;
   screenshotFileName: string;
+  screenshotSymbol: string;
 }
 
 const INDICATOR_COLORS = ["#ef4444", "#f97316", "#f59e0b", "#2563eb", "#22c55e", "#14b8a6", "#7c3aed"] as const;
@@ -116,10 +118,12 @@ export function ChartPanel({
   themeMode,
   timeframe,
   viewportKey,
+  jumpIndex,
   canTogglePlayback,
   onTogglePlayback,
   onScreenshotReady,
   screenshotFileName,
+  screenshotSymbol,
 }: ChartPanelProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -172,7 +176,50 @@ export function ChartPanel({
           logging: false,
           useCORS: true,
         });
-        const dataUrl = canvas.toDataURL("image/png");
+        const range = chartRef.current?.timeScale().getVisibleLogicalRange();
+        const visibleChartBars = range
+          ? bars.slice(Math.max(0, Math.ceil(range.from)), Math.max(0, Math.floor(range.to) + 1))
+          : bars;
+        const visibleDates = new Set(visibleChartBars.map((bar) => bar.datetime.slice(0, 10)));
+        const tradeDates = [...new Set(chartExecutions
+          .filter((execution) => visibleDates.has((execution.displayTime ?? execution.time).slice(0, 10)))
+          .map((execution) => execution.time.slice(0, 10)))].sort();
+        const dates = tradeDates.length > 0 ? tradeDates : [...visibleDates].sort();
+        const dateLabel = languageMode === "ja"
+          ? (tradeDates.length > 0 ? "売買日" : "表示日")
+          : (tradeDates.length > 0 ? "Trade dates" : "Chart dates");
+        const scale = canvas.width / target.getBoundingClientRect().width;
+        const output = document.createElement("canvas");
+        const context = output.getContext("2d");
+        if (!context) throw new Error("Screenshot canvas is unavailable.");
+        const font = `${16 * scale}px sans-serif`;
+        context.font = font;
+        const lines: string[] = [];
+        for (const text of [
+          `${languageMode === "ja" ? "銘柄" : "Symbol"}: ${screenshotSymbol}`,
+          `${dateLabel}: ${dates.join(", ") || "—"}`,
+        ]) {
+          let line = "";
+          for (const character of text) {
+            if (line && context.measureText(line + character).width > canvas.width - 32 * scale) {
+              lines.push(line);
+              line = "";
+            }
+            line += character;
+          }
+          lines.push(line);
+        }
+        const headerHeight = (24 * lines.length + 24) * scale;
+        output.width = canvas.width;
+        output.height = canvas.height + Math.ceil(headerHeight);
+        context.fillStyle = themeMode === "dark" ? "#0f172a" : "#ffffff";
+        context.fillRect(0, 0, output.width, output.height);
+        context.font = font;
+        context.textBaseline = "top";
+        context.fillStyle = themeMode === "dark" ? "#f8fafc" : "#0f172a";
+        lines.forEach((line, index) => context.fillText(line, 16 * scale, (12 + index * 24) * scale));
+        context.drawImage(canvas, 0, Math.ceil(headerHeight));
+        const dataUrl = output.toDataURL("image/png");
         if (!dataUrl.startsWith("data:image/png")) throw new Error("Screenshot canvas could not be encoded as PNG.");
         setScreenshotDataUrl(dataUrl);
 
@@ -192,7 +239,7 @@ export function ChartPanel({
 
     onScreenshotReady(captureScreenshot);
     return () => onScreenshotReady(null);
-  }, [onScreenshotReady, screenshotFileName, themeMode]);
+  }, [bars, chartExecutions, languageMode, onScreenshotReady, screenshotFileName, screenshotSymbol, themeMode]);
 
   function handleChartKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     if (event.key !== " " && event.code !== "Space") return;
@@ -406,8 +453,8 @@ export function ChartPanel({
     if (bars.length > 0) {
       if (shouldResetViewport) {
         timeScale?.setVisibleLogicalRange({
-          from: Math.max(-42, bars.length - 108),
-          to: Math.max(72, bars.length + 8),
+          from: Math.max(-42, jumpIndex - 42),
+          to: Math.max(72, jumpIndex + 72),
         });
         priceScale?.setAutoScale(true);
         appliedViewportKeyRef.current = viewportKey;
@@ -423,7 +470,7 @@ export function ChartPanel({
       timeScale?.fitContent();
       appliedViewportKeyRef.current = viewportKey;
     }
-  }, [bars.length, indicatorSeries, timeframe, timeMapping, viewportKey]);
+  }, [bars.length, indicatorSeries, jumpIndex, timeframe, timeMapping, viewportKey]);
 
   useEffect(() => {
     const chart = chartRef.current;
@@ -627,6 +674,7 @@ export function ChartPanel({
       {screenshotDataUrl ? (
         <a
           className="screenshot-download-link"
+          data-html2canvas-ignore="true"
           href={screenshotDataUrl}
           download={`${screenshotFileName}.png`}
         >

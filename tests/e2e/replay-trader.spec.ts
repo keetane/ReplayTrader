@@ -60,7 +60,7 @@ test.describe("Replay Trader major flows", () => {
     await expect(page.getByRole("heading", { name: "Replay Trader" })).toBeVisible();
     await expect(page.locator(".app-shell")).toHaveAttribute("data-theme", "dark");
     await expect(page.getByRole("button", { name: "分足CSV" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "約定履歴CSV" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "約定・取引履歴CSV" })).toBeVisible();
     await expect(page.getByRole("button", { name: "実約定を非表示" })).toBeVisible();
     await page.getByRole("button", { name: "実約定を非表示" }).click();
     await expect(page.getByRole("button", { name: "実約定を表示" })).toBeVisible();
@@ -91,7 +91,7 @@ test.describe("Replay Trader major flows", () => {
 
     await expect(page.getByRole("button", { name: "日本語" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Bar CSV" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Trade history CSV" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Orders / trades CSV" })).toBeVisible();
     await expect(page.getByText("You can choose a date after loading a CSV file.")).toBeVisible();
     await expect(page.getByText("No CSV files loaded.")).toBeVisible();
     await expect(page.getByRole("button", { name: "Generate sample" })).toBeVisible();
@@ -164,6 +164,31 @@ test.describe("Replay Trader major flows", () => {
     await expect(historicalSection.getByRole("cell", { name: "信用新規売" })).toBeVisible();
     await expect(historicalSection.getByRole("cell", { name: "信用返済買" })).toBeVisible();
     await expect(page.locator(".execution-label")).toHaveCount(2);
+  });
+
+  test("tradehistory形式の取引履歴を価格に対応する足へ表示する", async ({ page }) => {
+    await openApp(page);
+    const barCsv = [
+      "Datetime,Close,High,Low,Open,Volume",
+      "2026-07-22 09:00:00+0900,12600,12610,12590,12600,1000",
+      "2026-07-22 09:01:00+0900,12690,12710,12680,12690,1000",
+    ].join("\n");
+    const historyCsv = [
+      "約定日,受渡日,銘柄コード,銘柄名,市場名称,口座区分,取引区分,売買区分,信用区分,弁済期限,数量［株］,単価［円］,手数料［円］,税金等［円］,諸費用［円］,税区分,受渡金額［円］,建約定日,建単価［円］",
+      '"2026/7/22","2026/7/24","6976","太陽誘電","東証","特定","信用新規","売建","制度","6ヶ月","100","12,600.0","0","0","0","-","-","-","0.0"',
+      '"2026/7/22","2026/7/24","6976","太陽誘電","東証","特定","信用返済","買埋","制度","6ヶ月","100","12,690.0","0","0","0","源徴あり","-","-","0.0"',
+    ].join("\n");
+
+    const fileInputs = page.locator('input[type="file"]');
+    await fileInputs.nth(0).setInputFiles({ name: "太陽誘電.csv", mimeType: "text/csv", buffer: Buffer.from(barCsv) });
+    await fileInputs.nth(1).setInputFiles({ name: "tradehistory(JP).csv", mimeType: "text/csv", buffer: Buffer.from(historyCsv) });
+
+    await expect(page.locator(".execution-label")).toHaveCount(1);
+    await page.getByRole("button", { name: "次へ" }).click();
+    await expect(page.locator(".execution-label")).toHaveCount(2);
+    await expect(page.locator(".execution-label").filter({ hasText: "損失 -9,000円" })).toBeVisible();
+    await expect(page.locator(".historical-trades-section").getByRole("cell", { name: "信用新規売" })).toBeVisible();
+    await expect(page.locator(".historical-trades-section").getByRole("cell", { name: "信用返済買" })).toBeVisible();
   });
 
   test("架空サンプル生成で銘柄、チャート、口座サマリーが有効になる", async ({ page }) => {
@@ -346,7 +371,7 @@ test.describe("Replay Trader major flows", () => {
     await loadSyntheticSample(page);
 
     await page.getByRole("button", { name: "銘柄メニューを開く" }).click();
-    await expect(page.getByLabel("リプレイ日")).toHaveValue("");
+    await expect(page.getByLabel("ジャンプ先の日付")).toHaveValue("");
     await expect(page.getByText(`未指定のため、今日に最も近い ${SAMPLE_DATE} を表示中`)).toBeVisible();
     await page.getByRole("button", { name: "銘柄メニューを閉じる" }).click();
   });
@@ -355,7 +380,7 @@ test.describe("Replay Trader major flows", () => {
     await loadSyntheticSample(page);
 
     await page.getByRole("button", { name: "銘柄メニューを開く" }).click();
-    await page.getByLabel("リプレイ日").fill("2024-05-19");
+    await page.getByLabel("ジャンプ先の日付").fill("2024-05-19");
 
     await expect(page.getByText(`指定日にデータがないため、最も近い ${SAMPLE_DATE} を表示中`)).toBeVisible();
     await expect(chartHeader(page).getByText(new RegExp(`${SAMPLE_DATE} 09:00:[0-5][0-9]\\+0900`))).toBeVisible();
@@ -386,6 +411,36 @@ test.describe("Replay Trader major flows", () => {
 
     await expect(timeframe).toHaveValue("1m");
     await expect(page.getByText("1 / 300")).toBeVisible();
+  });
+
+  test("再生中の時刻と再生状態を保って時間足を切り替えられる", async ({ page }) => {
+    await openApp(page);
+    const barCsv = [
+      "Datetime,Close,High,Low,Open,Volume",
+      "2024-05-16 09:00:00+0900,90,91,89,90,1000",
+      ...Array.from({ length: 10 }, (_, index) => {
+        const minute = String(index).padStart(2, "0");
+        return `2024-05-17 09:${minute}:00+0900,${101 + index},${102 + index},${99 + index},${100 + index},12000`;
+      }),
+    ].join("\n");
+    await page.locator('input[type="file"]').nth(0).setInputFiles({
+      name: "TIMEFRAME_TEST.csv",
+      mimeType: "text/csv",
+      buffer: Buffer.from(barCsv),
+    });
+
+    await page.getByRole("button", { name: "60x", exact: true }).click();
+    await page.getByRole("button", { name: "再生", exact: true }).click();
+    await expect(chartHeader(page).getByText(/2024-05-17 09:01:[0-5][0-9]\+0900/)).toBeVisible({ timeout: 2_500 });
+
+    const timeframe = page.getByLabel("時間足");
+    await timeframe.selectOption("5m");
+    await expect(page.getByRole("button", { name: "一時停止", exact: true })).toBeVisible();
+    await expect(chartHeader(page).getByText(/2024-05-17 09:01:[0-5][0-9]\+0900/)).toBeVisible();
+
+    await timeframe.selectOption("1m");
+    await expect(page.getByRole("button", { name: "一時停止", exact: true })).toBeVisible();
+    await expect(chartHeader(page).getByText(/2024-05-17 09:01:[0-5][0-9]\+0900/)).toBeVisible();
   });
 
   test("インジケーターを移動平均とボリンジャーバンドで切り替えられる", async ({ page }) => {
@@ -514,4 +569,40 @@ test.describe("Replay Trader major flows", () => {
     await expect(page.getByRole("button", { name: "ダーク" })).toBeVisible();
     await page.getByRole("button", { name: "銘柄メニューを閉じる" }).click();
   });
+});
+
+
+test("日付ジャンプ後は再生位置までの足と約定マークだけを表示する", async ({ page }) => {
+  await openApp(page);
+  const dates = ["2026-07-01", "2026-07-15", "2026-07-31"];
+  const barCsv = ["Datetime,Close,High,Low,Open,Volume", ...dates.flatMap((date) => [
+    `${date} 09:00:00+0900,100,110,90,100,1000`,
+    `${date} 09:01:00+0900,100,110,90,100,1000`,
+  ])].join("\n");
+  const historyCsv = [
+    "注文番号,アルゴ注文番号,状況,注文日時,注文期限,銘柄,銘柄コード・市場,取引,売買,注文方法,注文数量[株/口],約定数量[株/口],約定単価[円],約定代金[円]",
+    ...["2026-06-30", ...dates, "2026-08-01"].map((date, i) =>
+      `${i},,約定,${date.slice(5).replace("-", "/")} 09:01:30,${date.replaceAll("-", "/")},太陽誘電,6976 東証(SOR),信用新規,買建,通常注文,100,100,100,10000`),
+    "9,,約定,07/15 09:00:00,2026/07/15,別銘柄,9999 東証,信用新規,買建,通常注文,100,100,100,10000",
+  ].join("\n");
+  const inputs = page.locator('input[type="file"]');
+  await inputs.nth(0).setInputFiles({ name: "太陽誘電.csv", mimeType: "text/csv", buffer: Buffer.from(barCsv) });
+  await inputs.nth(1).setInputFiles({ name: "history.csv", mimeType: "text/csv", buffer: Buffer.from(historyCsv) });
+  await expect(page.locator(".execution-label")).toHaveCount(2);
+  await expect(page.locator(".historical-trades-section tbody tr")).toHaveCount(3);
+  await page.getByRole("button", { name: "銘柄メニューを開く" }).click();
+  await page.getByLabel("ジャンプ先の日付").fill(dates[0]);
+  await page.getByRole("button", { name: "銘柄メニューを閉じる" }).click();
+  await expect(chartHeader(page)).toContainText(`${dates[0]} 09:00:00+0900`);
+  await expect(page.getByText("1 / 6", { exact: true })).toBeVisible();
+  await expect(page.locator(".execution-label")).toHaveCount(0);
+  await page.getByRole("button", { name: "次へ" }).click();
+  await expect(page.locator(".execution-label")).toHaveCount(1);
+  await page.getByRole("button", { name: "次へ" }).click();
+  await expect(chartHeader(page)).toContainText(`${dates[1]} 09:00:00+0900`);
+  await expect(page.locator(".execution-label")).toHaveCount(1);
+  await page.getByLabel("時間足").selectOption("5m");
+  await expect(page.locator(".execution-label")).toHaveCount(2);
+  await page.getByRole("button", { name: "実約定を非表示" }).click();
+  await expect(page.locator(".execution-label")).toHaveCount(0);
 });

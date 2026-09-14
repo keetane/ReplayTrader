@@ -33,6 +33,13 @@ export function getReplayAdvanceIntervalMs(timeframe: Timeframe, speed: number):
   return getTimeframeDurationMs(timeframe) / normalizedSpeed;
 }
 
+export function getReplayRemainingIntervalMs(timeframe: Timeframe, speed: number, elapsedMs: number): number {
+  const durationMs = getTimeframeDurationMs(timeframe);
+  const normalizedSpeed = Number.isFinite(speed) && speed > 0 ? speed : 1;
+  const normalizedElapsedMs = Number.isFinite(elapsedMs) ? Math.min(durationMs, Math.max(0, elapsedMs)) : 0;
+  return Math.max(1, Math.round((durationMs - normalizedElapsedMs) / normalizedSpeed));
+}
+
 export function getIntrabarWalkTickCount(volume: number, volumes: number[], tickMode: TickMode = "desktop"): number {
   if (tickMode === "mobile") {
     if (!Number.isFinite(volume) || volume <= 0) return 1;
