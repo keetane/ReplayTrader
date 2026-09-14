@@ -159,14 +159,6 @@ input:disabled {
   font-size: 15px;
 }
 
-.drawer-controls {
-  display: grid;
-  gap: 12px;
-  margin-bottom: 14px;
-  padding-bottom: 14px;
-  border-bottom: 1px solid #e7edf5;
-}
-
 .drawer-section {
   display: grid;
   gap: 8px;
@@ -175,10 +167,6 @@ input:disabled {
 .drawer-section h3 {
   margin: 0;
   font-size: 12px;
-}
-
-.drawer-date-field {
-  margin: 0;
 }
 
 .drawer-settings {
@@ -704,6 +692,22 @@ input[type="range"] {
   gap: 8px;
 }
 
+.replay-date-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+
+.replay-date-picker input {
+  width: 148px;
+}
+
+.replay-date-note {
+  min-height: 0;
+  margin: 0 0 8px;
+}
+
 .primary-button,
 .secondary-button,
 .icon-button,
@@ -811,6 +815,16 @@ input:not([type="range"]) {
   grid-template-columns: 1fr 1fr;
   gap: 8px;
   margin-bottom: 11px;
+}
+
+.order-type-selector {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.order-type-selector button {
+  min-width: 0;
+  padding-inline: 6px;
+  white-space: nowrap;
 }
 
 .segmented button.buy,

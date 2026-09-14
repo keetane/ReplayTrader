@@ -5,6 +5,7 @@ import {
   getIntrabarWalkIntervalMs,
   getIntrabarWalkTickCount,
   getReplayAdvanceIntervalMs,
+  getReplayRemainingIntervalMs,
   getTseTickSize,
   moveToAdjacentTseTick,
   roundToTseTick,
@@ -30,6 +31,14 @@ describe("getReplayAdvanceIntervalMs", () => {
   it("falls back to 1x for invalid playback speed", () => {
     expect(getReplayAdvanceIntervalMs("1m", 0)).toBe(60_000);
     expect(getReplayAdvanceIntervalMs("5m", Number.NaN)).toBe(300_000);
+  });
+});
+
+describe("getReplayRemainingIntervalMs", () => {
+  it("uses only the remaining portion of a bar after a timeframe change", () => {
+    expect(getReplayRemainingIntervalMs("5m", 1, 120_000)).toBe(180_000);
+    expect(getReplayRemainingIntervalMs("5m", 5, 120_000)).toBe(36_000);
+    expect(getReplayRemainingIntervalMs("1m", 60, 30_000)).toBe(500);
   });
 });
 

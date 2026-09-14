@@ -28,7 +28,7 @@ export class TradeHistoryParseError extends Error {
   }
 }
 
-const REQUIRED_COLUMNS = [
+const STOCK_ORDER_REQUIRED_COLUMNS = [
   "状況",
   "注文日時",
   "注文期限",
@@ -41,6 +41,17 @@ const REQUIRED_COLUMNS = [
   "約定数量[株/口]",
   "約定単価[円]",
   "約定代金[円]",
+] as const;
+
+const SETTLED_TRADE_REQUIRED_COLUMNS = [
+  "約定日",
+  "銘柄コード",
+  "銘柄名",
+  "市場名称",
+  "取引区分",
+  "売買区分",
+  "数量［株］",
+  "単価［円］",
 ] as const;
 
 export function decodeTradeHistory(buffer: ArrayBuffer): string {
@@ -64,10 +75,24 @@ export function parseTradeHistoryText(text: string, sourceName = "trade-history.
 
   const header = splitCsvLine(lines[0]).map((value) => value.trim());
   const columnIndex = new Map(header.map((name, index) => [name, index]));
-  const missing = REQUIRED_COLUMNS.filter((column) => !columnIndex.has(column));
-  if (missing.length > 0) {
-    throw new TradeHistoryParseError(`取引履歴CSVの必須カラムが不足しています: ${missing.join(", ")}`);
+  if (STOCK_ORDER_REQUIRED_COLUMNS.every((column) => columnIndex.has(column))) {
+    return parseStockOrderRows(lines, header, columnIndex, sourceName);
   }
+  if (SETTLED_TRADE_REQUIRED_COLUMNS.every((column) => columnIndex.has(column))) {
+    return parseSettledTradeRows(lines, header, columnIndex, sourceName);
+  }
+
+  throw new TradeHistoryParseError(
+    "約定履歴または取引履歴CSVとして認識できません。対応するCSVを選択してください。",
+  );
+}
+
+function parseStockOrderRows(
+  lines: string[],
+  header: string[],
+  columnIndex: Map<string, number>,
+  sourceName: string,
+): TradeHistoryParseResult {
 
   const trades: HistoricalTrade[] = [];
   const warnings: string[] = [];
@@ -142,6 +167,79 @@ export function parseTradeHistoryText(text: string, sourceName = "trade-history.
   return { trades: assignHistoricalTradePnl(trades), totalRows: lines.length - 1, excludedRows, warnings };
 }
 
+function parseSettledTradeRows(
+  lines: string[],
+  header: string[],
+  columnIndex: Map<string, number>,
+  sourceName: string,
+): TradeHistoryParseResult {
+  const trades: HistoricalTrade[] = [];
+  const warnings: string[] = [];
+  const sourceId = normalizeSourceName(sourceName);
+  let excludedRows = 0;
+
+  for (let rowIndex = 1; rowIndex < lines.length; rowIndex += 1) {
+    const cells = splitCsvLine(lines[rowIndex]);
+    const lineNumber = rowIndex + 1;
+    if (cells.length !== header.length) {
+      throw new TradeHistoryParseError(`${lineNumber}行目: カラム数がヘッダと一致しません。`);
+    }
+
+    const date = parseTradeDate(cell(cells, columnIndex, "約定日"));
+    const ticker = cell(cells, columnIndex, "銘柄コード").trim();
+    const companyName = cell(cells, columnIndex, "銘柄名").trim();
+    const transaction = cell(cells, columnIndex, "取引区分").trim();
+    const sideText = cell(cells, columnIndex, "売買区分").trim();
+    const quantity = parseNumber(cell(cells, columnIndex, "数量［株］"));
+    const price = parseNumber(cell(cells, columnIndex, "単価［円］"));
+    const mapping = mapTrade(transaction, sideText);
+    if (date == null || ticker.length === 0 || companyName.length === 0 || quantity == null || quantity <= 0 || price == null || mapping == null) {
+      warnings.push(`${sourceName}: ${lineNumber}行目は約定日、銘柄、数量、単価、または取引区分を解釈できないため除外しました。`);
+      excludedRows += 1;
+      continue;
+    }
+
+    const dateTime = `${date} 09:00:00+0900`;
+    const parsedEntryPrice = parseNumber(cell(cells, columnIndex, "建単価［円］"));
+    const entryPrice = parsedEntryPrice != null && parsedEntryPrice > 0 ? parsedEntryPrice : undefined;
+    const settledAmount = parseNumber(cell(cells, columnIndex, "受渡金額［円］"));
+    const calculatedPnl = entryPrice == null
+      ? undefined
+      : (mapping.side === "buy" ? entryPrice - price : price - entryPrice) * Math.trunc(quantity);
+    const realizedPnl = mapping.tradeType === "marginClose"
+      ? settledAmount ?? calculatedPnl
+      : undefined;
+    trades.push({
+      id: `historical-${sourceId}-${ticker}-${dateTime}-${rowIndex}`,
+      ticker,
+      companyName,
+      exchange: cell(cells, columnIndex, "市場名称").trim(),
+      transaction,
+      side: mapping.side,
+      tradeType: mapping.tradeType,
+      product: mapping.product,
+      quantity: Math.trunc(quantity),
+      price,
+      notional: price * Math.trunc(quantity),
+      time: dateTime,
+      date,
+      orderType: [cell(cells, columnIndex, "信用区分"), cell(cells, columnIndex, "弁済期限")]
+        .map((value) => value.trim())
+        .filter((value) => value.length > 0)
+        .join(" "),
+      status: "約定",
+      realizedPnl,
+    });
+  }
+
+  if (trades.length === 0) {
+    throw new TradeHistoryParseError("約定済みの取引が見つかりませんでした。");
+  }
+
+  trades.sort((first, second) => Date.parse(toIsoDate(first.time)) - Date.parse(toIsoDate(second.time)));
+  return { trades: assignHistoricalTradePnl(trades), totalRows: lines.length - 1, excludedRows, warnings };
+}
+
 interface HistoricalLot {
   symbolKey: string;
   side: "long" | "short";
@@ -167,19 +265,22 @@ function assignHistoricalTradePnl(trades: HistoricalTrade[]): HistoricalTrade[] 
 
     const closingSide = trade.side === "buy" ? "short" : "long";
     let remaining = trade.quantity;
-    let realizedPnl = 0;
+    let calculatedPnl = 0;
+    let matchedQuantityTotal = 0;
     for (const lot of lots) {
       if (remaining <= 0) break;
       if (lot.symbolKey !== symbolKey || lot.side !== closingSide || lot.quantity <= 0) continue;
       const matchedQuantity = Math.min(remaining, lot.quantity);
-      realizedPnl += closingSide === "long"
+      calculatedPnl += closingSide === "long"
         ? (trade.price - lot.price) * matchedQuantity
         : (lot.price - trade.price) * matchedQuantity;
+      matchedQuantityTotal += matchedQuantity;
       lot.quantity -= matchedQuantity;
       remaining -= matchedQuantity;
     }
 
-    return { ...trade, realizedPnl };
+    if (trade.realizedPnl != null) return trade;
+    return matchedQuantityTotal > 0 ? { ...trade, realizedPnl: calculatedPnl } : trade;
   });
 }
 
@@ -211,6 +312,10 @@ function parseOrderDate(value: string): string | null {
     return null;
   }
   return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
+}
+
+function parseTradeDate(value: string): string | null {
+  return parseOrderDate(value);
 }
 
 function parseOrderTime(value: string): string | null {

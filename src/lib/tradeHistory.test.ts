@@ -41,6 +41,55 @@ describe("parseTradeHistoryText", () => {
     ).toThrow("約定済みの取引が見つかりませんでした");
   });
 
+  it("maps settled trade history rows without execution times", () => {
+    const result = parseTradeHistoryText(
+      [
+        "約定日,受渡日,銘柄コード,銘柄名,市場名称,口座区分,取引区分,売買区分,信用区分,弁済期限,数量［株］,単価［円］,手数料［円］,税金等［円］,諸費用［円］,税区分,受渡金額［円］,建約定日,建単価［円］",
+        '"2026/7/22","2026/7/24","6976","太陽誘電","東証","特定","信用新規","売建","制度","6ヶ月","100","12,600.0","0","0","0","-","-","-","0.0"',
+        '"2026/7/22","2026/7/24","6976","太陽誘電","東証","特定","信用返済","買埋","制度","6ヶ月","100","12,500.0","0","0","38","源徴あり","9,962","2026/7/22","12,600.0"',
+      ].join("\n"),
+      "tradehistory(JP).csv",
+    );
+
+    expect(result.totalRows).toBe(2);
+    expect(result.excludedRows).toBe(0);
+    expect(result.trades).toHaveLength(2);
+    expect(result.trades[0]).toMatchObject({
+      ticker: "6976",
+      companyName: "太陽誘電",
+      exchange: "東証",
+      tradeType: "marginOpen",
+      side: "sell",
+      quantity: 100,
+      price: 12600,
+      time: "2026-07-22 09:00:00+0900",
+      status: "約定",
+    });
+    expect(result.trades[1]).toMatchObject({
+      tradeType: "marginClose",
+      side: "buy",
+      realizedPnl: 9962,
+    });
+  });
+
+  it("calculates unsettled same-day closes from matching opening lots instead of notional", () => {
+    const result = parseTradeHistoryText(
+      [
+        "約定日,受渡日,銘柄コード,銘柄名,市場名称,口座区分,取引区分,売買区分,信用区分,弁済期限,数量［株］,単価［円］,手数料［円］,税金等［円］,諸費用［円］,税区分,受渡金額［円］,建約定日,建単価［円］",
+        '"2026/9/14","2026/9/16","5801","古河電工","東証","特定","信用新規","買建","制度","6ヶ月","100","3,730.0","0","0","0","-","-","-","0.0"',
+        '"2026/9/14","2026/9/16","5801","古河電工","東証","特定","信用返済","売埋","制度","6ヶ月","100","3,869.0","0","0","0","源徴あり","-","-","0.0"',
+      ].join("\n"),
+      "tradehistory-current.csv",
+    );
+
+    expect(result.trades[1]).toMatchObject({
+      tradeType: "marginClose",
+      side: "sell",
+      notional: 386900,
+      realizedPnl: 13900,
+    });
+  });
+
   it("matches broker names and tickers to user-facing symbol filenames", () => {
     const result = parseTradeHistoryText(
       [

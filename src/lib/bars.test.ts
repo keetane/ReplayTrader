@@ -5,9 +5,11 @@ import {
   calculateBollingerBands,
   calculateMovingAverage,
   calculateVisibleMovingAverage,
+  findReplayBarIndex,
   filterBarsByDate,
   filterBarsFromDateLookback,
   resolveRequestedDate,
+  sliceBarsToReplayPosition,
 } from "./bars";
 
 const bars: Bar[] = [
@@ -69,6 +71,25 @@ describe("bar helpers", () => {
       "2024-05-17 09:00:00+0900",
       "2024-05-20 09:00:00+0900",
     ]);
+  });
+
+  it("shows bars only through the current replay position", () => {
+    const replayBar = { ...bars[3], close: 105.5 };
+
+    expect(sliceBarsToReplayPosition(bars, 3, replayBar)).toEqual([
+      bars[0],
+      bars[1],
+      bars[2],
+      replayBar,
+    ]);
+  });
+
+  it("maps a replay timestamp to the containing bar after a timeframe change", () => {
+    const fiveMinuteBars = aggregateBars(bars, 5);
+    const timestamp = Number(bars[2].time) + 30;
+
+    expect(findReplayBarIndex(fiveMinuteBars, timestamp)).toBe(0);
+    expect(findReplayBarIndex(bars, timestamp)).toBe(2);
   });
 
   it("calculates moving averages from displayed bars", () => {

@@ -51,6 +51,31 @@ export function filterBarsFromDateLookback(bars: Bar[], date: string | undefined
   return bars.filter((bar) => visibleDates.has(bar.datetime.slice(0, 10)));
 }
 
+export function sliceBarsToReplayPosition(bars: Bar[], currentIndex: number, currentBar?: Bar): Bar[] {
+  if (!currentBar || bars.length === 0) return [];
+  const safeIndex = Math.max(0, Math.min(Math.trunc(currentIndex), bars.length - 1));
+  return [...bars.slice(0, safeIndex), currentBar];
+}
+
+export function findReplayBarIndex(bars: Bar[], timestamp: number): number {
+  if (bars.length === 0 || !Number.isFinite(timestamp)) return 0;
+  let low = 0;
+  let high = bars.length - 1;
+  let result = 0;
+
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    if (Number(bars[middle].time) <= timestamp) {
+      result = middle;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+
+  return result;
+}
+
 export function prepareBarsForTimeframe(bars: Bar[], timeframe: Timeframe): Bar[] {
   if (timeframe === "1m") return bars;
   return aggregateBars(bars, 5);
