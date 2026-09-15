@@ -400,6 +400,7 @@ function App() {
   const [symbols, setSymbols] = useState<SymbolData[]>([]);
   const [selectedSymbolId, setSelectedSymbolId] = useState<string>();
   const [requestedDate, setRequestedDate] = useState("");
+  const [dateJumpRevision, setDateJumpRevision] = useState(0);
   const [tickMode, setTickMode] = useState<TickMode>("mobile");
   const [timeframe, setTimeframe] = useState<Timeframe>("1m");
   const [indicatorMode, setIndicatorMode] = useState<IndicatorMode>("ma");
@@ -486,7 +487,7 @@ function App() {
   const totalPnl = trading.realizedPnl + unrealizedPnl;
   const maintenanceRatio = evaluateMaintenanceRatio(accountValue, marginExposure);
   const marginBuyingPower = evaluateMarginBuyingPower(trading.cash, marginExposure);
-  const chartViewportKey = `${selectedSymbolId ?? "none"}:${resolvedDate.activeDate ?? "none"}:${timeframe}:${indicatorMode}:${bollingerPeriod}`;
+  const chartViewportKey = `${selectedSymbolId ?? "none"}:${resolvedDate.activeDate ?? "none"}:${timeframe}:${indicatorMode}:${bollingerPeriod}:${dateJumpRevision}:${chartAnchorIndex}`;
 
   const selectedHistoricalSymbol = useMemo(
     () => symbols.find((symbol) => symbol.id === selectedSymbolId),
@@ -657,7 +658,7 @@ function App() {
       setChartAnchorIndex(jumpIndex);
     }
     setWalkState(null);
-  }, [selectedSymbolId, resolvedDate.activeDate]);
+  }, [selectedSymbolId, requestedDate, resolvedDate.activeDate, dateJumpRevision]);
 
   async function handleFiles(files: FileList | null) {
     if (!files || files.length === 0) return;
@@ -697,6 +698,7 @@ function App() {
       setRequestedDate("");
       setReplayIndex(0);
       setPlaying(false);
+      setDateJumpRevision((revision) => revision + 1);
     }
 
     setParseMessage(messages.join("\n"));
@@ -1435,6 +1437,7 @@ function App() {
                   title={ui.replayDate}
                   type="date"
                   value={requestedDate}
+                  onClick={() => setDateJumpRevision((revision) => revision + 1)}
                   onChange={(event) => setRequestedDate(event.currentTarget.value)}
                 />
               </label>
@@ -1447,6 +1450,7 @@ function App() {
                 onClick={() => {
                   setWalkState(null);
                   setReplayIndex(0);
+                  setChartAnchorIndex(0);
                 }}
                 disabled={bars.length === 0}
               >
