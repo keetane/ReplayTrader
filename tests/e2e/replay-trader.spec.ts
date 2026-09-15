@@ -40,6 +40,12 @@ function executionsSection(page: Page) {
   return page.locator(".table-section").filter({ has: page.getByRole("heading", { name: "約定履歴" }) });
 }
 
+async function expectTimeline(page: Page, date: string, time: string) {
+  const timestamp = page.locator(".timeline-row > div").first();
+  await expect(timestamp.locator("strong")).toHaveText(date);
+  await expect(timestamp.locator("span")).toHaveText(time);
+}
+
 async function pricesMatchCurrent(targetInput: Locator, stopInput: Locator, currentValue: Locator) {
   const current = (await currentValue.innerText()).replace(/,/g, "");
   return (await targetInput.inputValue()) === current && (await stopInput.inputValue()) === current;
@@ -137,6 +143,38 @@ test.describe("Replay Trader major flows", () => {
     await expect(symbolRow.getByText("前日比 +10 (+11.1%)")).toBeVisible();
     await expect(symbolRow.getByText("3 行")).toBeVisible();
     await page.getByRole("button", { name: "銘柄メニューを閉じる" }).click();
+  });
+
+  test("最新日と同じ解決日・同じ入力値を指定した場合と同一CSV再読込時にも日付へジャンプする", async ({ page }) => {
+    await openApp(page);
+    const csvText = [
+      "Datetime,Close,High,Low,Open,Volume",
+      "2026-09-11 09:00:00+0900,100,101,99,100,1000",
+      "2026-09-11 09:01:00+0900,101,102,100,100,1200",
+      "2026-09-15 09:00:00+0900,110,111,109,110,1400",
+      "2026-09-15 09:01:00+0900,111,112,110,110,1600",
+    ].join("\n");
+    const fileInput = page.locator('input[type="file"]').nth(0);
+    const replayDate = page.getByLabel("ジャンプ先の日付");
+
+    await fileInput.setInputFiles({ name: "LATEST_DATE.csv", mimeType: "text/csv", buffer: Buffer.from(csvText) });
+    await expectTimeline(page, "2026-09-15", "09:00:00");
+
+    await page.getByRole("button", { name: "先頭へ" }).click();
+    await expectTimeline(page, "2026-09-11", "09:00:00");
+    const firstDateChart = await page.locator(".chart-canvas").screenshot();
+    await replayDate.fill("2026-09-15");
+    await expectTimeline(page, "2026-09-15", "09:00:00");
+
+    await page.getByRole("button", { name: "先頭へ" }).click();
+    await replayDate.click();
+    await expectTimeline(page, "2026-09-15", "09:00:00");
+    await expect.poll(async () => page.locator(".chart-canvas").screenshot()).not.toEqual(firstDateChart);
+
+    await replayDate.fill("");
+    await page.getByRole("button", { name: "先頭へ" }).click();
+    await fileInput.setInputFiles({ name: "LATEST_DATE.csv", mimeType: "text/csv", buffer: Buffer.from(csvText) });
+    await expectTimeline(page, "2026-09-15", "09:00:00");
   });
 
   test("約定済みの取引履歴だけを該当銘柄のリプレイへ表示する", async ({ page }) => {
